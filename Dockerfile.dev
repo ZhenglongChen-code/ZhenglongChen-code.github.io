@@ -12,6 +12,7 @@ WORKDIR /usr/src/app
 
 COPY Gemfile Gemfile.lock jekyll-text-theme.gemspec ./
 RUN bundle install
+COPY . .
 
 EXPOSE 4000
 
