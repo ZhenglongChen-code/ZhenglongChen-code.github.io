@@ -38,6 +38,16 @@ I am a MS. student at  Research Center for Mathematics and Interdisciplinary Sci
 ### Intelligent  Surrogate  Model  for  Imbalanced  Data, Qingdao  Soft  Control Company.
 *2023/09 - 2024/09*
 
+## Awards and Achievements
+
+- **ICM <i class="fas fa-award"></i> Finalist**, Interdisciplinary Contest in Modeling
+- **National Mathematical Contest <i class="fas fa-trophy"></i> 1st Prize**, National Mathematical Contest in Modeling (Jiangsu)
+- **Blue Bridge Cup <i class="fas fa-medal"></i> 1st Prize**, Blue Bridge Cup Algorithm Competition (Jiangsu)
+- **National Mathematics <i class="fas fa-ribbon"></i> 2nd Prize**, National Mathematics Competition (Category A, Jiangsu)
+- **Undergraduate Thesis <i class="fas fa-certificate"></i> Outstanding Undergraduate Thesis Team**, Jiangsu Province
+- **Scholarship <i class="fas fa-star"></i> First-Class Scholarship (NUIST 3)**, Second-Class Scholarship (SDU)
+- **Other <i class="fas fa-heart"></i> Outstanding Psychological Committee Member**, SDU
+
 [//]: # (## News)
 
 [//]: # (- **[Feb. 2020]** Our paper about incremental learning is accepted to CVPR 2020.)
