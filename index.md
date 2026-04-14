@@ -46,6 +46,7 @@ I am a MS. student at  Research Center for Mathematics and Interdisciplinary Sci
 - **National Mathematics <i class="fas fa-ribbon"></i> 2nd Prize**, National Mathematics Competition (Category A, Jiangsu)
 - **Undergraduate Thesis <i class="fas fa-certificate"></i> Outstanding Undergraduate Thesis Team**, Jiangsu Province
 - **Scholarship <i class="fas fa-star"></i> First-Class Scholarship (NUIST 3)**, Second-Class Scholarship (SDU)
+- **National Scholarship for Postgraduates <i class="fas fa-medal"></i> 2025**, Ministry of Education
 - **Other <i class="fas fa-heart"></i> Outstanding Psychological Committee Member**, SDU
 
 [//]: # (## News)
