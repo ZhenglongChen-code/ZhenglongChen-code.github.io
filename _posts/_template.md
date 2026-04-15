@@ -1,8 +1,9 @@
 ---
-layout: homepage
+layout: page
 title: "博客标题"
 date: YYYY-MM-DD
 categories: [分类名称]
+cover_image: https://images.unsplash.com/photo-xxxxx?w=1200&q=80
 ---
 
 ## 文章标题（可选，不写则使用上面的 title）

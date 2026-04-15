@@ -1,9 +1,11 @@
 ---
-layout: homepage
+layout: page
 title: "Flow Matching: 数学原理与公式推导"
 date: 2026-04-13
 categories: [机器学习, 生成模型]
+cover_image: https://images.unsplash.com/photo-1635070041078-e363dbe005cb?w=1200&q=80
 ---
+
 
 ## 引言
 
