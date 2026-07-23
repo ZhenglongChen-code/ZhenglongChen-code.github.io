@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { lstat, mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
-import { parse_studio_article, serialize_studio_article, discover_local_images } from './studio_article';
+import { parse_studio_article, serialize_studio_article, discover_local_images, type studio_asset } from './studio_article';
 import { render_markdown_preview, studio_validation_error } from './markdown_preview';
 import { prepare_article_images, rewrite_markdown_images, studio_image_publish_error, type cleanup_result, type cos_adapter, type image_preparation_options, type prepared_image } from './studio_images';
 import type { git_adapter, git_publish_result, git_transaction_inspection, git_transaction_inspection_input } from './studio_git';
@@ -51,6 +51,24 @@ const article_public_url = (public_site_url: string, slug: string): string => `$
 
 /** Produces a failed response with an optional exact-version cleanup report. */
 const failed = (errors: studio_error[], cleanup?: cleanup_result): studio_response => ({ protocol_version: 1, kind: 'failed', errors, ...(cleanup === undefined ? {} : { cleanup }) });
+
+/** Keeps existing generated assets unless a newly prepared file has the same local source path. */
+const merge_asset_manifest = (existing_assets: readonly studio_asset[], prepared_images: readonly prepared_image[]): studio_asset[] => {
+  const replacements = new Map(prepared_images.map(({ source_path, object_key, public_url }) => [source_path, { source_path, object_key, public_url }]));
+  const merged: studio_asset[] = [];
+  const seen_source_paths = new Set<string>();
+  for (const asset of existing_assets) {
+    if (seen_source_paths.has(asset.source_path)) continue;
+    seen_source_paths.add(asset.source_path);
+    merged.push(replacements.get(asset.source_path) ?? { ...asset });
+  }
+  for (const image of prepared_images) {
+    if (seen_source_paths.has(image.source_path)) continue;
+    seen_source_paths.add(image.source_path);
+    merged.push({ source_path: image.source_path, object_key: image.object_key, public_url: image.public_url });
+  }
+  return merged;
+};
 
 /** Ensures an item resolves under, rather than to, a root directory. */
 const inside = (root: string, value: string): boolean => { const item = relative(root, value); return item !== '' && !item.startsWith('..') && !isAbsolute(item); };
@@ -191,7 +209,7 @@ const validate = async (request: studio_request): Promise<ReturnType<typeof pars
 };
 
 /** Copies mutable request values before queueing to prevent caller mutation from changing effects. */
-const snapshot_request = (request: studio_request): studio_request => ({ ...request, metadata: { ...request.metadata, ...(request.metadata.tags ? { tags: [...request.metadata.tags] } : {}), ...(request.metadata.social ? { social: { ...request.metadata.social } } : {}) }, ...(request.images ? { images: request.images.map((image) => ({ ...image, bytes: new Uint8Array(image.bytes) })) } : {}) });
+const snapshot_request = (request: studio_request): studio_request => ({ ...request, metadata: { ...request.metadata, ...(request.metadata.tags ? { tags: [...request.metadata.tags] } : {}), ...(request.metadata.assets ? { assets: request.metadata.assets.map((asset) => ({ ...asset })) } : {}), ...(request.metadata.social ? { social: { ...request.metadata.social } } : {}) }, ...(request.images ? { images: request.images.map((image) => ({ ...image, bytes: new Uint8Array(image.bytes) })) } : {}) });
 
 /** Produces a safe recovery response for opaque filesystem or side-effect ambiguity. */
 const recovery = (code: string, message: string): studio_response => ({ protocol_version: 1, kind: 'recovery_required', errors: [issue(code, message)] });
@@ -376,6 +394,11 @@ export const publish_article = async (input: unknown, dependencies: studio_publi
     } catch (cause: unknown) { return failed([issue('image_validation', cause instanceof Error ? cause.message.replace(/[\r\n].*/s, '') : 'Image validation failed.')]); }
     const prepared_by_key = new Map(prepared.map((image) => [image.object_key, image]));
     if (prepared_by_key.size !== prepared.length || prepared.some((image) => !sha256_pattern.test(image.sha256) || sha256(image.bytes) !== image.sha256)) return failed([issue('image_validation', 'Prepared images have invalid deterministic identity.')]);
+    const existing_assets_by_source_path = new Map(article.metadata.assets.map((asset) => [asset.source_path, asset]));
+    if (prepared.some((image) => {
+      const existing_asset = existing_assets_by_source_path.get(image.source_path);
+      return existing_asset !== undefined && existing_asset.object_key !== image.object_key;
+    })) return failed([issue('image_replacement_unauthorized', 'A prepared image does not match the imported asset manifest.', 'images')]);
     if (current?.owned.some((object) => prepared_by_key.get(object.object_key)?.sha256 !== object.sha256)) return recovery('corrupt_journal', 'Journal-owned objects do not match this publication request.');
     if (!current) {
       current = { protocol_version: 1, request_id: snapshot.request_id, payload_hash: hash, status: 'in_progress', phase: 'pre_commit', target_path: `src/content/writing/${snapshot.slug}.md`, owned: [] };
@@ -424,7 +447,7 @@ export const publish_article = async (input: unknown, dependencies: studio_publi
     }
     const urls = new Map(prepared.map((image) => [image.source_path, image.public_url]));
     let source: Uint8Array;
-    try { source = new TextEncoder().encode(serialize_studio_article({ ...article, body: rewrite_markdown_images(article.body, urls), metadata: { ...article.metadata, ...snapshot.metadata, slug: snapshot.slug, assets: prepared.map(({ source_path, object_key, public_url }) => ({ source_path, object_key, public_url })) } })); }
+    try { source = new TextEncoder().encode(serialize_studio_article({ ...article, body: rewrite_markdown_images(article.body, urls), metadata: { ...article.metadata, ...snapshot.metadata, slug: snapshot.slug, assets: merge_asset_manifest(article.metadata.assets, prepared) } })); }
     catch (cause: unknown) { return finish_precommit_failure(path, current, dependencies.cos, 'serialization_failed', cause instanceof Error ? cause.message.replace(/[\r\n].*/s, '') : 'Article serialization failed.', dependencies.runtime); }
     let baseline: { pre_git_head: string; baseline_sha: string };
     try { baseline = await dependencies.git.capture_baseline({ target_path: current.target_path }); }

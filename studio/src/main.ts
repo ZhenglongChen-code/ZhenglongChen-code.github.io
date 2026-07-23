@@ -117,6 +117,7 @@ const publish_update = by_id<HTMLButtonElement>('publish-update');
 
 let preview_timeout: number | undefined;
 let image_urls: Record<string, string> = {};
+let asset_manifest: studio_asset[] = [];
 const image_files = new Map<string, File>();
 const image_intents = new Map<string, image_intent>();
 let unresolved_sources: string[] = [];
@@ -148,12 +149,13 @@ const read_metadata = (): article_metadata => ({
   featured: get_field<HTMLInputElement>('featured').checked,
   draft: get_field<HTMLInputElement>('draft').checked,
   slug: get_field<HTMLInputElement>('slug').value.trim(),
-  assets: [],
+  assets: asset_manifest.map((asset) => ({ ...asset })),
   social: { zhihu: get_field<HTMLInputElement>('zhihu').checked, wechat: get_field<HTMLInputElement>('wechat').checked, xiaohongshu: get_field<HTMLInputElement>('xiaohongshu').checked },
 });
 
 const write_metadata = (metadata: Partial<article_metadata>): void => {
   const normalized = normalize_article_metadata(metadata);
+  asset_manifest = normalized.assets.map((asset) => ({ ...asset }));
   get_field<HTMLInputElement>('title').value = normalized.title;
   get_field<HTMLTextAreaElement>('description').value = normalized.description;
   get_field<HTMLInputElement>('date').value = normalized.date;

@@ -131,10 +131,46 @@ describe('studio publication', () => {
     await publish_article(changed, { ...publication_dependencies(await journal_root(), { verify_versioning: async () => undefined, inspect_object: async () => undefined, upload_object: async () => ({ version_id: 'v1' }), delete_object: async () => undefined }), prepare_images: async () => [], git: with_baseline({ publish: async (input: git_publish_input) => { source = new TextDecoder().decode(input.source); return { ok: true as const, path: 'x', commit_sha: 'f'.repeat(40), push_status: 'pushed' as const }; } }) });
     expect(source).toContain('translation: en-post'); expect(source).toContain('featured: true'); expect(source).toContain('zhihu: false');
   });
+  it('keeps imported assets and replaces a prepared asset by source path during an update', async () => {
+    let source = '';
+    const existing_assets = [
+      { source_path: 'figure.png', object_key: prepared.object_key, public_url: prepared.public_url },
+      { source_path: 'retained.png', object_key: 'site/articles/2026/post/fig-02-retained.png', public_url: 'https://assets.example/site/articles/2026/post/fig-02-retained.png' },
+    ];
+    const updated = {
+      ...request,
+      kind: 'publish_update' as const,
+      request_id: '22222222222222222222222222222222',
+      expected_source_hash: 'a'.repeat(64),
+      markdown: `---\ntitle: Post\ndescription: Description\ndate: 2026-01-02\nassets:\n  - source_path: figure.png\n    object_key: ${prepared.object_key}\n    public_url: ${prepared.public_url}\n  - source_path: retained.png\n    object_key: site/articles/2026/post/fig-02-retained.png\n    public_url: https://assets.example/site/articles/2026/post/fig-02-retained.png\n---\n\n![a](https://assets.example/site/articles/2026/post/fig-01-figure.png)`,
+      metadata: { ...request.metadata, assets: existing_assets },
+      images: undefined,
+    };
+    const replacement = { ...prepared, sha256: createHash('sha256').update(new Uint8Array([2])).digest('hex'), bytes: new Uint8Array([2]), public_url: 'https://assets.example/site/articles/2026/post/fig-01-figure-v2.png' };
+    const result = await publish_article(updated, {
+      ...publication_dependencies(await journal_root(), { verify_versioning: async () => undefined, inspect_object: async () => undefined, upload_object: async () => ({ version_id: 'v1' }), delete_object: async () => undefined }),
+      prepare_images: async () => [replacement],
+      git: with_baseline({ publish: async (input: git_publish_input) => { source = new TextDecoder().decode(input.source); return { ok: true as const, path: 'src/content/writing/post.md', commit_sha: 'b'.repeat(40), push_status: 'pushed' as const }; } }),
+    });
+
+    expect(result).toMatchObject({ kind: 'published' });
+    const serialized = validate_studio_request({ ...updated, images: [] });
+    expect(serialized.metadata.assets).toEqual(existing_assets);
+    expect(source).toContain('source_path: figure.png');
+    expect(source).toContain("public_url: 'https://assets.example/site/articles/2026/post/fig-01-figure-v2.png'");
+    expect(source).toContain('source_path: retained.png');
+    expect((source.match(/source_path: figure\.png/g) ?? [])).toHaveLength(1);
+  });
   it('rejects invalid metadata before any COS side effect', async () => {
     let uploads = 0; let inspections = 0; const invalid = { ...request, metadata: { ...request.metadata, title: '' } };
     const result = await publish_article(invalid, publication_dependencies(await journal_root(), { verify_versioning: async () => undefined, inspect_object: async () => { inspections += 1; return undefined; }, upload_object: async () => { uploads += 1; return { version_id: 'v1' }; }, delete_object: async () => undefined }));
     expect(result).toMatchObject({ kind: 'failed', errors: [{ code: 'invalid_field' }] }); expect(uploads).toBe(0); expect(inspections).toBe(0);
+  });
+  it('rejects malformed LaTeX before any COS side effect', async () => {
+    let uploads = 0; let inspections = 0;
+    const invalid_math = { ...request, markdown: '---\ntitle: Post\ndescription: Description\ndate: 2026-01-02\n---\n\n$\\frac{1}{$\n', images: [] };
+    const result = await publish_article(invalid_math, publication_dependencies(await journal_root(), { verify_versioning: async () => undefined, inspect_object: async () => { inspections += 1; return undefined; }, upload_object: async () => { uploads += 1; return { version_id: 'v1' }; }, delete_object: async () => undefined }));
+    expect(result).toMatchObject({ kind: 'failed', errors: [{ code: 'invalid_math', field: 'markdown' }] }); expect(uploads).toBe(0); expect(inspections).toBe(0);
   });
   it('reuses a matching foreign object and never records or deletes it as owned', async () => {
     let uploads = 0; let deletes = 0; const result = await publish_article(request, { ...publication_dependencies(await journal_root(), { verify_versioning: async () => undefined, inspect_object: async () => ({ sha256: prepared.sha256, version_id: 'foreign-v1', studio_request_id: '1'.repeat(32) }), upload_object: async () => { uploads += 1; return { version_id: 'v1' }; }, delete_object: async () => { deletes += 1; } }), git: with_baseline({ publish: async () => ({ ok: false as const, code: 'stale_source' as const, message: 'changed' }) }) });

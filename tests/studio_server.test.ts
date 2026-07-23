@@ -262,12 +262,14 @@ describe('local Markdown Studio server', () => {
     await expect(raw_status(base_url, '/', { Host: 'localhost:4317', Origin: base_url })).resolves.toBe(403);
   });
 
-  it('serves only regular built assets with no-store headers', async () => {
+  it('serves only regular built assets with no-store and anti-framing headers', async () => {
     const { base_url } = await start_server();
 
     const response = await request(base_url, '/app.js');
     expect(response.status).toBe(200);
     expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(response.headers.get('content-security-policy')).toContain("frame-ancestors 'none'");
+    expect(response.headers.get('x-frame-options')).toBe('DENY');
     await expect(request(base_url, '/../../package.json')).resolves.toMatchObject({ status: 404 });
   });
 

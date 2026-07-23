@@ -16,6 +16,7 @@ const default_request_max_bytes = 25_000_000;
 const default_image_max_bytes = 20_000_000;
 const studio_port = 4317;
 const loopback_host = '127.0.0.1';
+const studio_content_security_policy = "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'";
 const preview_metadata_defaults: studio_article_metadata = {
   title: '',
   description: '',
@@ -354,7 +355,7 @@ export const create_studio_server = (options: studio_server_options = {}): studi
       send_json(response, 404, { error: 'Not found.' });
       return;
     }
-    response.writeHead(200, { 'content-type': asset.content_type, 'content-length': asset.bytes.byteLength, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
+    response.writeHead(200, { 'content-type': asset.content_type, 'content-length': asset.bytes.byteLength, 'cache-control': 'no-store', 'content-security-policy': studio_content_security_policy, 'x-content-type-options': 'nosniff', 'x-frame-options': 'DENY' });
     response.end(request.method === 'HEAD' ? undefined : asset.bytes);
   };
   server = createServer((request, response) => {
