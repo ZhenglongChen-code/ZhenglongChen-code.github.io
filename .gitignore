@@ -12,6 +12,7 @@ social_exports/
 .env
 .env.*
 !.env.example
+!.env.studio.example
 _site
 .sass-cache
 Gemfile.lock
