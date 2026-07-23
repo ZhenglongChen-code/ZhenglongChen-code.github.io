@@ -1,6 +1,7 @@
 node_modules/
 dist/
 studio/dist/
+.playwright-cli/
 .studio/transactions/
 .env.studio.local
 .astro/

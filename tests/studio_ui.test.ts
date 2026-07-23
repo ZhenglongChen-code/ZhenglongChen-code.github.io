@@ -1,7 +1,12 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { mkdtemp, readFile, rm, symlink } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { describe, expect, test } from 'vitest';
+import { render_markdown_preview } from '../src/lib/markdown_preview';
+import { discover_local_images, parse_studio_article } from '../src/lib/studio_article';
 import { feedback_should_focus, is_current_import, is_latest_preview, next_import_sequence, next_tab_index, normalize_article_metadata, publication_feedback, reconcile_image_pairs, safe_storage_get, safe_storage_remove, safe_storage_set } from '../studio/src/main';
+import { create_attention_map } from './fixtures/studio/create_attention_map';
 
 const read_source = (path: string): string => readFileSync(resolve(process.cwd(), path), 'utf8');
 
@@ -179,5 +184,50 @@ describe('local markdown studio UI contract', () => {
     expect(preview_clear).toBeGreaterThan(reset_start);
     expect(current_import_check).toBeGreaterThan(import_start);
     expect(reset_call).toBeGreaterThan(current_import_check);
+  });
+
+  test('creates a deterministic attention-map fixture only inside the caller temporary root', async () => {
+    const fixture_root = await mkdtemp(join(tmpdir(), 'latent-field-studio-fixture-'));
+    const outside_root = await mkdtemp(join(tmpdir(), 'latent-field-studio-outside-'));
+    try {
+      const first_path = await create_attention_map(fixture_root);
+      const first_bytes = await readFile(first_path);
+      const second_path = await create_attention_map(fixture_root, join(fixture_root, 'second.png'));
+      const second_bytes = await readFile(second_path);
+
+      expect(first_path).toBe(join(fixture_root, 'attention-map.png'));
+      expect(first_bytes).toEqual(second_bytes);
+      await expect(create_attention_map(fixture_root, join(outside_root, 'escaped.png'))).rejects.toThrow(/temporary root/i);
+
+      const linked_directory = join(fixture_root, 'linked');
+      await symlink(outside_root, linked_directory);
+      await expect(create_attention_map(fixture_root, join(linked_directory, 'escaped.png'))).rejects.toThrow(/symbolic link/i);
+    } finally {
+      await rm(fixture_root, { recursive: true, force: true });
+      await rm(outside_root, { recursive: true, force: true });
+    }
+  });
+
+  test('checks generated public artifacts for Studio and source-map leakage', () => {
+    const checker = read_source('scripts/check_site.mjs');
+
+    for (const forbidden_artifact of ['.env.studio.local', '.studio/transactions', 'session_token', '/api/', 'source map']) {
+      expect(checker).toContain(forbidden_artifact);
+    }
+  });
+
+  test('ships the importable Markdown fixture with formulas, escaped currency, code, and a local image', async () => {
+    const fixture = read_source('tests/fixtures/studio/article-with-math.md');
+    const article = parse_studio_article(fixture, 'attention-map-preview');
+    const preview_html = await render_markdown_preview(article.body);
+
+    expect(fixture).toContain('$p(y \\mid x)$');
+    expect(fixture).toContain('\\$5.00');
+    expect(fixture).toContain('![注意力图](./attention-map.png)');
+    expect(article.metadata.title).toBe('注意力图的本地预览');
+    expect(discover_local_images(article.body)).toEqual(['./attention-map.png']);
+    expect(preview_html).toContain('class="katex"');
+    expect(preview_html).toContain('formula_like = $not_rendered_inside_a_fence$');
+    expect(preview_html).not.toContain('<script>');
   });
 });

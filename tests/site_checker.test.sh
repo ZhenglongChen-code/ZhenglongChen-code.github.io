@@ -103,4 +103,24 @@ mkdir -p "$source_only_fixture/src"
 printf '陈正龙\nChenZL\n' >"$source_only_fixture/src/notes.md"
 assert_success 'source documents are outside the generated artifact scan' run_checker "$source_only_fixture"
 
+studio_markup_fixture="$test_root/studio_markup"
+make_fixture "$studio_markup_fixture"
+printf '<html>Local Markdown Studio</html>\n' >"$studio_markup_fixture/dist/articles/leak.html"
+assert_failure 'public Studio markup must be rejected' run_checker "$studio_markup_fixture"
+
+studio_api_fixture="$test_root/studio_api"
+make_fixture "$studio_api_fixture"
+printf '<script>fetch("/api/publish")</script>\n' >"$studio_api_fixture/dist/articles/leak.html"
+assert_failure 'public Studio API routes must be rejected' run_checker "$studio_api_fixture"
+
+studio_secret_fixture="$test_root/studio_secret"
+make_fixture "$studio_secret_fixture"
+printf 'session_token .env.studio.local .studio/transactions transaction journal\n' >"$studio_secret_fixture/dist/articles/leak.html"
+assert_failure 'public Studio tokens and transaction data must be rejected' run_checker "$studio_secret_fixture"
+
+source_map_fixture="$test_root/source_map"
+make_fixture "$source_map_fixture"
+printf '{"sources":["studio/src/main.ts"]}\n' >"$source_map_fixture/dist/app.js.map"
+assert_failure 'public source maps must be rejected' run_checker "$source_map_fixture"
+
 printf 'site_checker tests passed\n'

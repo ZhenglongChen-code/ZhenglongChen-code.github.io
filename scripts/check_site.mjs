@@ -21,6 +21,14 @@ const generated_artifact_roots = [
 ];
 
 const former_public_names = ['陈正龙', 'ChenZL'];
+const forbidden_studio_markers = [
+  { marker: 'studio', description: 'Studio UI' },
+  { marker: '/api/', description: 'Studio API route' },
+  { marker: 'session_token', description: 'Studio token' },
+  { marker: '.env.studio.local', description: 'local Studio environment file' },
+  { marker: '.studio/transactions', description: 'Studio transaction journal' },
+  { marker: 'transaction journal', description: 'Studio transaction journal' },
+];
 
 /** Return a validation error for a build artifact, or null when it is safe. */
 async function inspect_artifact(relative_path) {
@@ -101,6 +109,44 @@ async function collect_generated_artifacts(relative_root, allowed_extensions) {
 
   await visit_directory(root_path);
   return artifact_paths;
+}
+
+/** Collect every public build file so private Studio assets and source maps cannot escape. */
+async function collect_public_build_files() {
+  const root_path = resolve('dist');
+  const files = [];
+
+  async function visit_directory(directory_path) {
+    const entries = await readdir(directory_path, { withFileTypes: true });
+    for (const entry of entries) {
+      const entry_path = resolve(directory_path, entry.name);
+      if (entry.isDirectory()) await visit_directory(entry_path);
+      else if (entry.isFile()) files.push(entry_path);
+    }
+  }
+
+  await visit_directory(root_path);
+  return files;
+}
+
+/** Return public-build errors for Studio markers, private paths, and source maps. */
+async function inspect_public_studio_exclusion() {
+  const errors = [];
+  const artifact_paths = await collect_public_build_files();
+  for (const artifact_path of artifact_paths) {
+    const artifact_label = relative(process.cwd(), artifact_path);
+    if (extname(artifact_path).toLowerCase() === '.map') {
+      errors.push(`${artifact_label}: source map leakage is forbidden`);
+      continue;
+    }
+    const artifact_content = await readFile(artifact_path, 'utf8').catch(() => undefined);
+    if (artifact_content === undefined) continue;
+    const normalized_content = artifact_content.toLowerCase();
+    for (const { marker, description } of forbidden_studio_markers) {
+      if (normalized_content.includes(marker)) errors.push(`${artifact_label}: contains ${description}`);
+    }
+  }
+  return errors;
 }
 
 /** Return a validation error when the generated social-export directory has no public text files. */
@@ -185,6 +231,12 @@ async function check_site() {
 
   if (identity_errors.length > 0) {
     throw new Error(`invalid generated public identity artifacts:\n- ${identity_errors.join('\n- ')}`);
+  }
+
+  const studio_exclusion_errors = await inspect_public_studio_exclusion();
+
+  if (studio_exclusion_errors.length > 0) {
+    throw new Error(`invalid public Studio exclusion:\n- ${studio_exclusion_errors.join('\n- ')}`);
   }
 
   console.log(`site artifacts verified (${required_paths.length} required files)`);
