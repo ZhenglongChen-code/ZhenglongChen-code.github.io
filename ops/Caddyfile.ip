@@ -1,0 +1,12 @@
+http://106.14.173.234 {
+    root * /var/www/personal_site/runtime/current
+    encode zstd gzip
+    file_server
+
+    header {
+        X-Content-Type-Options nosniff
+        Referrer-Policy strict-origin-when-cross-origin
+        X-Frame-Options DENY
+        -Server
+    }
+}

@@ -1,3 +1,14 @@
+node_modules/
+dist/
+.astro/
+.social_exports-stage-*/
+.social_exports-backup-*/
+.superpowers/
+.worktrees/
+social_exports/
+.env
+.env.*
+!.env.example
 _site
 .sass-cache
 Gemfile.lock
@@ -7,5 +18,3 @@ Gemfile.lock
 git-update.sh
 podcast_maker.py
 .secrets.yaml
-.superpowers/
-.worktrees/

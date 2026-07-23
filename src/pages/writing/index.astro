@@ -1,0 +1,42 @@
+---
+import { getCollection as get_collection } from 'astro:content';
+import Post_list from '../../components/post_list.astro';
+import Base_layout from '../../layouts/base_layout.astro';
+import { get_public_posts } from '../../lib/content';
+import { encode_tag_slug } from '../../lib/tag_routes';
+
+const writing_entries = await get_collection('writing');
+const chinese_posts = get_public_posts(writing_entries)
+  .filter((writing_entry) => writing_entry.data.language === 'zh');
+const tag_labels = [...new Set(chinese_posts.flatMap((writing_entry) => writing_entry.data.tags))]
+  .sort((first_tag, second_tag) => first_tag.localeCompare(second_tag, 'zh-CN'));
+---
+
+<Base_layout
+  title="写作与笔记 | ChenZL"
+  description="ChenZL关于多模态研究、数学思考、AI 产品与长期实践的中文写作。"
+  language="zh"
+  canonical_path="/writing"
+>
+  <div class="shell">
+    <header class="page_heading">
+      <p class="section_kicker">Writing / Field Notes</p>
+      <h1>写作与笔记</h1>
+      <p>记录值得反复思考的问题、项目中的判断，以及持续学习留下的线索。</p>
+    </header>
+
+    {tag_labels.length > 0 && (
+      <nav aria-label="按标签浏览">
+        <ul class="tag_cloud">
+          {tag_labels.map((tag_label) => (
+            <li><a href={`/tags/${encode_tag_slug(tag_label)}`}>#{tag_label}</a></li>
+          ))}
+        </ul>
+      </nav>
+    )}
+
+    <section class="archive_section" aria-label="全部中文文章">
+      <Post_list writing_entries={chinese_posts} />
+    </section>
+  </div>
+</Base_layout>

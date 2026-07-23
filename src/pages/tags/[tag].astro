@@ -1,0 +1,44 @@
+---
+import { getCollection as get_collection, type CollectionEntry } from 'astro:content';
+import Post_list from '../../components/post_list.astro';
+import Base_layout from '../../layouts/base_layout.astro';
+import { group_posts_by_tag } from '../../lib/content';
+import { encode_tag_slug } from '../../lib/tag_routes';
+
+type Props = {
+  tag_label: string;
+  writing_entries: CollectionEntry<'writing'>[];
+};
+
+export async function getStaticPaths() {
+  const all_writing = await get_collection('writing');
+  const chinese_writing = all_writing.filter((writing_entry) => writing_entry.data.language === 'zh');
+  const grouped_posts = group_posts_by_tag(chinese_writing);
+
+  return [...grouped_posts.entries()].map(([tag_label, writing_entries]) => ({
+    params: { tag: encode_tag_slug(tag_label) },
+    props: { tag_label, writing_entries },
+  }));
+}
+
+const { tag_label, writing_entries } = Astro.props;
+const encoded_tag = encode_tag_slug(tag_label);
+---
+
+<Base_layout
+  title={`#${tag_label} | ChenZL的写作`}
+  description={`ChenZL标记为“${tag_label}”的中文文章。`}
+  language="zh"
+  canonical_path={`/tags/${encoded_tag}`}
+>
+  <div class="shell">
+    <header class="page_heading">
+      <p class="section_kicker">Writing / Tag</p>
+      <h1>#{tag_label}</h1>
+      <p>这个标签下共有 {writing_entries.length} 篇公开文章。</p>
+    </header>
+    <section class="tag_section" aria-label={`标签“${tag_label}”下的文章`}>
+      <Post_list writing_entries={writing_entries} />
+    </section>
+  </div>
+</Base_layout>

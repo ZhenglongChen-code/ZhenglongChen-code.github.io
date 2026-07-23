@@ -1,0 +1,38 @@
+---
+import type { CollectionEntry } from 'astro:content';
+
+type Props = {
+  work_entries: CollectionEntry<'work'>[];
+};
+
+const { work_entries } = Astro.props;
+const kind_labels: Record<CollectionEntry<'work'>['data']['kind'], string> = {
+  research: '研究',
+  project: '项目',
+  tool: '工具',
+};
+---
+
+<ol class="project_list">
+  {work_entries.map((work_entry) => (
+    <li class="project_row">
+      <div class="project_meta">
+        <span>{work_entry.data.year}</span>
+        <span>{kind_labels[work_entry.data.kind]}</span>
+      </div>
+      <article class="project_entry">
+        <h3>
+          {work_entry.data.url ? (
+            <a href={work_entry.data.url} rel="noreferrer">{work_entry.data.title}<span class="external_mark" aria-hidden="true">↗</span></a>
+          ) : work_entry.data.title}
+        </h3>
+        <p>{work_entry.data.description}</p>
+        {work_entry.data.tags.length > 0 && (
+          <ul class="tag_list" aria-label="项目标签">
+            {work_entry.data.tags.map((tag) => <li>{tag}</li>)}
+          </ul>
+        )}
+      </article>
+    </li>
+  ))}
+</ol>

@@ -1,0 +1,109 @@
+---
+import { getCollection as get_collection } from 'astro:content';
+import Post_list from '../components/post_list.astro';
+import Project_list from '../components/project_list.astro';
+import Base_layout from '../layouts/base_layout.astro';
+import { get_public_posts } from '../lib/content';
+
+const all_writing = await get_collection('writing');
+const public_writing = get_public_posts(all_writing);
+const all_work = await get_collection('work');
+const public_work = [...all_work]
+  .filter((work_entry) => !work_entry.data.draft)
+  .sort((first_entry, second_entry) => (
+    Number(second_entry.data.featured) - Number(first_entry.data.featured)
+    || second_entry.data.year - first_entry.data.year
+  ));
+const selected_work = public_work.filter((work_entry) => work_entry.data.featured);
+const featured_post = public_writing.find((writing_entry) => writing_entry.data.featured);
+const latest_writing = public_writing
+  .filter((writing_entry) => writing_entry.id !== featured_post?.id)
+  .slice(0, 3);
+const featured_path = featured_post
+  ? featured_post.data.language === 'en'
+    ? `/en/writing/${featured_post.id}`
+    : `/writing/${featured_post.id}`
+  : '/writing';
+const featured_language = featured_post?.data.language === 'en' ? 'en' : 'zh-CN';
+const featured_label = featured_post?.data.language === 'en' ? 'Featured essay' : '精选文章';
+const featured_link_label = featured_post?.data.language === 'en' ? 'Read the essay' : '阅读全文';
+const featured_link_aria_label = featured_post
+  ? featured_post.data.language === 'en'
+    ? `Read the essay: ${featured_post.data.title}`
+    : `阅读全文：${featured_post.data.title}`
+  : undefined;
+---
+
+<Base_layout
+  title="ChenZL | VLM Algorithm Engineer"
+  description="ChenZL，VLM Algorithm Engineer。关注多模态研究、数学思考与 AI 产品，也在这里记录长期写作与实践。"
+  language="zh"
+  canonical_path="/"
+>
+  <div class="shell">
+    <section class="hero" aria-labelledby="hero_title">
+      <div class="hero_heading">
+        <p class="eyebrow">Research · Writing · Building</p>
+        <h1 id="hero_title">ChenZL</h1>
+      </div>
+      <div class="hero_copy">
+        <p class="role">VLM Algorithm Engineer</p>
+        <p class="intro">关注多模态研究、数学思考与 <span lang="en">AI</span> 产品，也在这里记录长期写作与实践。</p>
+        <div class="hero_links">
+          <a href="#selected_work">查看项目</a>
+          <a href="#selected_writing">阅读文章</a>
+        </div>
+      </div>
+    </section>
+
+    <section class="home_section" id="selected_work" aria-labelledby="work_title">
+      <header class="section_header">
+        <div>
+          <p class="section_kicker">01 / Selected Work</p>
+          <h2 id="work_title">代表项目</h2>
+        </div>
+        <a class="section_link" href="/work">查看全部</a>
+      </header>
+      <Project_list work_entries={selected_work} />
+    </section>
+
+    <section class="home_section writing_section" id="selected_writing" aria-labelledby="writing_title">
+      <header class="section_header writing_header">
+        <div>
+          <p class="section_kicker">02 / Field Notes</p>
+          <h2 id="writing_title">写作与笔记</h2>
+        </div>
+        <a class="section_link" href="/writing">全部文章</a>
+      </header>
+
+      <div class="editorial_grid">
+        {featured_post && (
+          <article class="featured_post" lang={featured_language}>
+            <p class="featured_label">{featured_label}</p>
+            <div class="featured_meta">
+              <time datetime={featured_post.data.date.toISOString()}>
+                {featured_post.data.date.toLocaleDateString(featured_language, {
+                  year: 'numeric',
+                  month: 'long',
+                  day: 'numeric',
+                  timeZone: 'Asia/Shanghai',
+                })}
+              </time>
+              <span>{featured_post.data.language === 'zh' ? '中文' : 'English'}</span>
+            </div>
+            <h3><a href={featured_path}>{featured_post.data.title}</a></h3>
+            <p class="featured_summary">{featured_post.data.description}</p>
+            <a class="read_link" href={featured_path} aria-label={featured_link_aria_label}>
+              {featured_link_label}
+            </a>
+          </article>
+        )}
+
+        <aside class="latest_posts" aria-label="最新文章">
+          <p class="list_heading">最新文章</p>
+          <Post_list writing_entries={latest_writing} />
+        </aside>
+      </div>
+    </section>
+  </div>
+</Base_layout>

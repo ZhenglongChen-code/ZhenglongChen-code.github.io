@@ -1,0 +1,30 @@
+---
+import { render } from 'astro:content';
+import Article_layout from '../../layouts/article_layout.astro';
+import {
+  get_article_static_paths,
+  type article_route_props,
+} from '../../lib/article_routes';
+
+type Props = article_route_props;
+
+export function getStaticPaths() {
+  return get_article_static_paths('zh');
+}
+
+const { writing_entry, translation_url } = Astro.props;
+const { Content } = await render(writing_entry);
+---
+
+<Article_layout
+  title={writing_entry.data.title}
+  description={writing_entry.data.description}
+  language="zh"
+  canonical_path={`/writing/${writing_entry.id}`}
+  date={writing_entry.data.date}
+  updated={writing_entry.data.updated}
+  tags={writing_entry.data.tags}
+  translation_url={translation_url}
+>
+  <Content />
+</Article_layout>

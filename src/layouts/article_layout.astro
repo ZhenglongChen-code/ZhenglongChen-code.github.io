@@ -1,0 +1,89 @@
+---
+import Base_layout from './base_layout.astro';
+import { encode_tag_slug } from '../lib/tag_routes';
+
+type Props = {
+  title: string;
+  description: string;
+  language: 'zh' | 'en';
+  canonical_path: string;
+  date: Date;
+  updated?: Date;
+  tags: string[];
+  translation_url?: string;
+};
+
+const {
+  title,
+  description,
+  language,
+  canonical_path,
+  date,
+  updated,
+  tags,
+  translation_url,
+} = Astro.props;
+const language_code = language === 'zh' ? 'zh-CN' : 'en';
+const date_locale = language === 'zh' ? 'zh-CN' : 'en';
+const published_label = language === 'zh' ? '发布于' : 'Published';
+const updated_label = language === 'zh' ? '更新于' : 'Updated';
+const tags_label = language === 'zh' ? '文章标签' : 'Article tags';
+const translation_label = language === 'zh' ? 'Read in English' : '阅读中文版';
+const translation_language = language === 'zh' ? 'en' : 'zh-CN';
+const translation_hreflang = language === 'zh' ? 'en' : 'zh-CN';
+const format_date = (value: Date) => value.toLocaleDateString(date_locale, {
+  year: 'numeric',
+  month: 'long',
+  day: 'numeric',
+  timeZone: 'Asia/Shanghai',
+});
+---
+
+<Base_layout
+  title={`${title} | ChenZL`}
+  description={description}
+  language={language}
+  canonical_path={canonical_path}
+  article={{ published_time: date, modified_time: updated }}
+>
+  <div class="shell" lang={language_code}>
+    <header class="article_header">
+      <h1>{title}</h1>
+      <div class="article_deck">
+        <p>{description}</p>
+        <div class="article_meta">
+          <p>
+            <span>{published_label} </span>
+            <time datetime={date.toISOString()}>{format_date(date)}</time>
+          </p>
+          {updated && (
+            <p>
+              <span>{updated_label} </span>
+              <time datetime={updated.toISOString()}>{format_date(updated)}</time>
+            </p>
+          )}
+          {tags.length > 0 && (
+            <ul class="tag_list" aria-label={tags_label}>
+              {tags.map((tag) => (
+                <li>
+                  {language === 'zh' ? <a href={`/tags/${encode_tag_slug(tag)}`}>{tag}</a> : tag}
+                </li>
+              ))}
+            </ul>
+          )}
+          {translation_url && (
+            <p>
+              <a href={translation_url} lang={translation_language} hreflang={translation_hreflang}>
+                {translation_label}
+              </a>
+            </p>
+          )}
+        </div>
+      </div>
+    </header>
+
+    <article class="article_body">
+      <slot />
+    </article>
+  </div>
+</Base_layout>

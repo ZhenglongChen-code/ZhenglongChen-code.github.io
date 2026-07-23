@@ -1,0 +1,47 @@
+---
+import type { CollectionEntry } from 'astro:content';
+
+type Props = {
+  writing_entries: CollectionEntry<'writing'>[];
+  start_number?: number;
+};
+
+const { writing_entries, start_number = 1 } = Astro.props;
+---
+
+<ol class="post_list" start={start_number}>
+  {writing_entries.map((writing_entry, index) => {
+    const entry_language = writing_entry.data.language === 'zh' ? 'zh-CN' : 'en';
+    const tag_label = writing_entry.data.language === 'zh' ? '文章标签' : 'Article tags';
+    const post_path = writing_entry.data.language === 'zh'
+      ? `/writing/${writing_entry.id}`
+      : `/en/writing/${writing_entry.id}`;
+    const display_number = String(start_number + index).padStart(2, '0');
+
+    return (
+      <li class="post_row" lang={entry_language}>
+        <span class="post_number" aria-hidden="true">{display_number}</span>
+        <article class="post_entry" lang={entry_language}>
+          <div class="post_meta">
+            <time datetime={writing_entry.data.date.toISOString()}>
+              {writing_entry.data.date.toLocaleDateString(entry_language, {
+                year: 'numeric',
+                month: 'short',
+                day: 'numeric',
+                timeZone: 'Asia/Shanghai',
+              })}
+            </time>
+            <span>{writing_entry.data.language === 'zh' ? '中文' : 'English'}</span>
+          </div>
+          <h3><a href={post_path}>{writing_entry.data.title}</a></h3>
+          <p>{writing_entry.data.description}</p>
+          {writing_entry.data.tags.length > 0 && (
+            <ul class="tag_list" aria-label={tag_label}>
+              {writing_entry.data.tags.map((tag) => <li>{tag}</li>)}
+            </ul>
+          )}
+        </article>
+      </li>
+    );
+  })}
+</ol>

@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+test_root="$(mktemp -d)"
+trap 'rm -rf -- "$test_root"' EXIT
+
+fail() {
+  printf 'FAIL: %s\n' "$1" >&2
+  exit 1
+}
+
+assert_success() {
+  local description="$1"
+  shift
+  "$@" || fail "$description"
+}
+
+assert_failure() {
+  local description="$1"
+  shift
+  if "$@"; then
+    fail "$description"
+  fi
+}
+
+make_fixture() {
+  local fixture_root="$1"
+
+  mkdir -p "$fixture_root/dist/writing" "$fixture_root/dist/work" "$fixture_root/dist/about" \
+    "$fixture_root/social_exports/welcome"
+  printf '<!doctype html><html lang="zh-CN"><head><link rel="canonical" href="http://106.14.173.234/"></head><body>ChenZL</body></html>\n' >"$fixture_root/dist/index.html"
+  printf '<html>ChenZL</html>\n' >"$fixture_root/dist/writing/index.html"
+  printf '<html>ChenZL</html>\n' >"$fixture_root/dist/work/index.html"
+  printf '<html>ChenZL</html>\n' >"$fixture_root/dist/about/index.html"
+  printf '<rss>ChenZL</rss>\n' >"$fixture_root/dist/rss.xml"
+  printf '<html>ChenZL</html>\n' >"$fixture_root/dist/404.html"
+  printf 'ChenZL\n' >"$fixture_root/social_exports/welcome/zhihu.md"
+}
+
+run_checker() {
+  local fixture_root="$1"
+  (
+    cd "$fixture_root"
+    node "$repo_root/scripts/check_site.mjs"
+  )
+}
+
+valid_fixture="$test_root/valid"
+make_fixture "$valid_fixture"
+assert_success 'a valid generated artifact set must pass' run_checker "$valid_fixture"
+
+chinese_leak_fixture="$test_root/chinese_leak"
+make_fixture "$chinese_leak_fixture"
+printf '<html>陈正龙</html>\n' >"$chinese_leak_fixture/dist/writing/leak.html"
+assert_failure 'generated HTML containing the former Chinese public name must fail' \
+  run_checker "$chinese_leak_fixture"
+
+english_leak_fixture="$test_root/english_leak"
+make_fixture "$english_leak_fixture"
+printf 'Zhenglong Chen\n' >"$english_leak_fixture/social_exports/welcome/zhihu.md"
+assert_failure 'social-export text containing the former English public name must fail' \
+  run_checker "$english_leak_fixture"
+
+missing_identity_fixture="$test_root/missing_identity"
+make_fixture "$missing_identity_fixture"
+printf '<!doctype html><html lang="zh-CN"><head><link rel="canonical" href="http://106.14.173.234/"></head><body>public homepage</body></html>\n' >"$missing_identity_fixture/dist/index.html"
+assert_failure 'a homepage without ChenZL must fail' run_checker "$missing_identity_fixture"
+
+missing_social_exports_fixture="$test_root/missing_social_exports"
+make_fixture "$missing_social_exports_fixture"
+rm -rf -- "$missing_social_exports_fixture/social_exports"
+assert_failure 'missing generated social exports must fail' run_checker "$missing_social_exports_fixture"
+
+empty_social_exports_fixture="$test_root/empty_social_exports"
+make_fixture "$empty_social_exports_fixture"
+rm -rf -- "$empty_social_exports_fixture/social_exports/welcome"
+assert_failure 'social exports without generated text files must fail' run_checker "$empty_social_exports_fixture"
+
+source_only_fixture="$test_root/source_only"
+make_fixture "$source_only_fixture"
+mkdir -p "$source_only_fixture/src"
+printf '陈正龙\nZhenglong Chen\n' >"$source_only_fixture/src/notes.md"
+assert_success 'source documents are outside the generated artifact scan' run_checker "$source_only_fixture"
+
+printf 'site_checker tests passed\n'
