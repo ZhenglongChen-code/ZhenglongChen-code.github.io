@@ -24,6 +24,13 @@ describe('render_markdown_preview', () => {
     expect(html).not.toContain('<span onclick=');
   });
 
+  it('rejects malformed LaTeX with a typed validation issue', async () => {
+    await expect(render_markdown_preview('$\\frac{1}{$')).rejects.toMatchObject({
+      name: 'studio_validation_error',
+      issues: [{ code: 'invalid_math', field: 'markdown' }],
+    });
+  });
+
   it('rejects executable raw HTML instead of silently removing it', async () => {
     await expect(render_markdown_preview('<img src=x onerror="alert(1)">')).rejects.toMatchObject({
       name: 'studio_validation_error',

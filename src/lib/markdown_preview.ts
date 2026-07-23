@@ -6,7 +6,7 @@ import { decodeHTML as decode_html } from 'entities';
 import { unified as unified_processor } from 'unified';
 
 export type studio_validation_issue = {
-  code: 'unsafe_html' | 'invalid_frontmatter' | 'invalid_slug';
+  code: 'unsafe_html' | 'invalid_frontmatter' | 'invalid_slug' | 'invalid_math';
   field?: string;
   message: string;
 };
@@ -21,9 +21,20 @@ export class studio_validation_error extends Error {
   }
 }
 
+type markdown_file = {
+  messages: ReadonlyArray<{ source?: string }>;
+};
+
+/** Fails the shared pipeline when rehype-katex reports a formula parse error. */
+const rehype_reject_invalid_math = () => (_tree: unknown, file: markdown_file): void => {
+  if (file.messages.some((message) => message.source === 'rehype-katex')) {
+    throw new Error('Invalid LaTeX.');
+  }
+};
+
 export const markdown_processor_options = {
   remarkPlugins: [remark_math],
-  rehypePlugins: [rehype_katex],
+  rehypePlugins: [rehype_katex, rehype_reject_invalid_math],
 };
 
 const preview_renderer = create_markdown_processor(markdown_processor_options);
@@ -110,5 +121,13 @@ export const render_markdown_preview = async (markdown: string): Promise<string>
       message: `Preview contains unsafe HTML (${unsafe_html}) that the sanitizer would remove.`,
     }]);
   }
-  return (await preview_renderer).render(markdown).then((result) => result.code);
+  try {
+    return await (await preview_renderer).render(markdown).then((result) => result.code);
+  } catch {
+    throw new studio_validation_error([{
+      code: 'invalid_math',
+      field: 'markdown',
+      message: 'Markdown contains invalid LaTeX.',
+    }]);
+  }
 };
