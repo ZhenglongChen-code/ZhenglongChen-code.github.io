@@ -35,19 +35,43 @@ afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root,
 describe('local_git_adapter', () => {
   it('inspects durable Git transaction states from target bytes and remote branch confirmation', async () => {
     const { adapter } = await make_repository(); const target_path = 'src/content/writing/recover.md'; const source = new TextEncoder().encode('recovered\n');
-    await expect(adapter.inspect_studio_transaction({ target_path, target_sha256: sha256(source), phase: 'git_pending' })).resolves.toEqual({ state: 'not_committed' });
+    const baseline = await adapter.capture_baseline({ target_path });
+    await expect(adapter.inspect_studio_transaction({ target_path, target_sha256: sha256(source), phase: 'git_pending', ...baseline })).resolves.toEqual({ state: 'not_committed' });
     const published = await adapter.publish({ operation: 'publish_new', slug: 'recover', source, commit_message: 'Recover transaction' });
     expect(published).toMatchObject({ ok: true });
-    await expect(adapter.inspect_studio_transaction({ target_path, target_sha256: sha256(source), phase: 'ambiguous' })).resolves.toMatchObject({ state: 'pushed', commit_sha: expect.stringMatching(/^[a-f0-9]{40}$/) });
-    await expect(adapter.inspect_studio_transaction({ target_path, target_sha256: '0'.repeat(64), phase: 'git_pending' })).resolves.toEqual({ state: 'not_committed' });
+    await expect(adapter.inspect_studio_transaction({ target_path, target_sha256: sha256(source), phase: 'ambiguous', ...baseline })).resolves.toMatchObject({ state: 'pushed', commit_sha: expect.stringMatching(/^[a-f0-9]{40}$/) });
+    await expect(adapter.inspect_studio_transaction({ target_path, target_sha256: '0'.repeat(64), phase: 'git_pending', ...baseline })).resolves.toEqual({ state: 'unknown' });
   });
 
   it('reports a verified local-only transaction when remote confirmation is unavailable', async () => {
     const { root } = await make_repository();
     const runner: git_command_runner = async (file, args, cwd) => { if (args[0] === 'push') throw new Error('offline'); const output = await exec_file_async(file, [...args], { cwd }); return { stdout: output.stdout, stderr: output.stderr }; };
-    const adapter = new local_git_adapter({ repository_root: root, publication_branch: 'main', remote_name: 'origin', writing_directory: 'src/content/writing', command_runner: runner }); const source = new TextEncoder().encode('local only\n');
+    const adapter = new local_git_adapter({ repository_root: root, publication_branch: 'main', remote_name: 'origin', writing_directory: 'src/content/writing', command_runner: runner }); const source = new TextEncoder().encode('local only\n'); const target_path = 'src/content/writing/local-only.md'; const baseline = await adapter.capture_baseline({ target_path });
     await expect(adapter.publish({ operation: 'publish_new', slug: 'local-only', source, commit_message: 'Local only' })).resolves.toMatchObject({ ok: false, code: 'push_failed', commit_retained: true });
-    await expect(adapter.inspect_studio_transaction({ target_path: 'src/content/writing/local-only.md', target_sha256: sha256(source), phase: 'git_pending' })).resolves.toMatchObject({ state: 'committed_local', commit_sha: expect.stringMatching(/^[a-f0-9]{40}$/) });
+    await expect(adapter.inspect_studio_transaction({ target_path, target_sha256: sha256(source), phase: 'git_pending', ...baseline })).resolves.toMatchObject({ state: 'committed_local', commit_sha: expect.stringMatching(/^[a-f0-9]{40}$/) });
+  });
+
+  it('retains an earlier Studio commit when a later target commit advances the remote branch', async () => {
+    const { root, adapter } = await make_repository(); const target_path = 'src/content/writing/history.md'; const first = new TextEncoder().encode('first\n'); const baseline = await git(root, 'rev-parse', 'HEAD');
+    const published = await adapter.publish({ operation: 'publish_new', slug: 'history', source: first, commit_message: 'First Studio commit' }); expect(published).toMatchObject({ ok: true });
+    await writeFile(join(root, target_path), 'later\n'); await git(root, 'add', '--', target_path); await git(root, 'commit', '-m', 'Later target commit'); await git(root, 'push', 'origin', 'main');
+    await expect(adapter.inspect_studio_transaction({ target_path, target_sha256: sha256(first), phase: 'ambiguous', pre_git_head: baseline, baseline_sha: baseline })).resolves.toMatchObject({ state: 'pushed', commit_sha: expect.stringMatching(/^[a-f0-9]{40}$/) });
+  });
+
+  it('returns unknown when baseline ancestry or remote visibility cannot be proven', async () => {
+    const { root, adapter } = await make_repository(); const source = new TextEncoder().encode('unknown\n'); const target_path = 'src/content/writing/unknown.md'; const baseline = await adapter.capture_baseline({ target_path });
+    const remote_down_runner: git_command_runner = async (file, args, cwd) => { if (args[0] === 'ls-remote') throw new Error('remote unavailable'); const output = await exec_file_async(file, [...args], { cwd }); return { stdout: output.stdout, stderr: output.stderr }; };
+    await expect(adapter.publish({ operation: 'publish_new', slug: 'unknown', source, commit_message: 'Unknown remote' })).resolves.toMatchObject({ ok: true });
+    const remote_down = new local_git_adapter({ repository_root: root, publication_branch: 'main', remote_name: 'origin', writing_directory: 'src/content/writing', command_runner: remote_down_runner });
+    await expect(remote_down.inspect_studio_transaction({ target_path, target_sha256: sha256(source), phase: 'git_pending', ...baseline })).resolves.toEqual({ state: 'unknown' });
+    await expect(remote_down.inspect_studio_transaction({ target_path, target_sha256: sha256(source), phase: 'git_pending', pre_git_head: '0'.repeat(40), baseline_sha: '0'.repeat(40) })).resolves.toEqual({ state: 'unknown' });
+  });
+
+  it('refuses to write when the branch changes after its captured Studio baseline', async () => {
+    const { root, adapter } = await make_repository(); const target_path = 'src/content/writing/baseline-guard.md'; const baseline = await adapter.capture_baseline({ target_path });
+    await writeFile(join(root, 'README.md'), 'advanced\n'); await git(root, 'add', '--', 'README.md'); await git(root, 'commit', '-m', 'Advance publication branch');
+    await expect(adapter.publish({ operation: 'publish_new', slug: 'baseline-guard', source: new TextEncoder().encode('guarded\n'), commit_message: 'Guard baseline', expected_baseline_sha: baseline.baseline_sha })).resolves.toMatchObject({ ok: false, code: 'baseline_changed' });
+    await expect(readFile(join(root, target_path))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('preserves article modes despite restrictive umask', async () => {

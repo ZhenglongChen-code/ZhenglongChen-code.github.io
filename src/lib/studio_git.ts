@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { execFile as exec_file } from 'node:child_process';
 import { constants as fs_constants } from 'node:fs';
-import { access, lstat, mkdir, open, realpath, rename, unlink, readFile, stat } from 'node:fs/promises';
+import { access, lstat, open, realpath, rename, unlink, readFile, stat } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
 
@@ -19,18 +19,20 @@ export type git_publish_input = {
   slug: string;
   source: Uint8Array;
   expected_source_hash?: string;
+  expected_baseline_sha?: string;
   commit_message: string;
 };
 
-export type git_publish_failure_code = 'validation' | 'unsafe_path' | 'article_exists' | 'article_missing' | 'stale_source' | 'target_dirty' | 'repository_busy' | 'wrong_branch' | 'integrity_failed' | 'critical_recovery_failed' | 'git_failed';
+export type git_publish_failure_code = 'validation' | 'unsafe_path' | 'article_exists' | 'article_missing' | 'stale_source' | 'baseline_changed' | 'target_dirty' | 'repository_busy' | 'wrong_branch' | 'integrity_failed' | 'critical_recovery_failed' | 'git_failed';
 export type git_publish_failure = { ok: false; code: Exclude<git_publish_failure_code, 'critical_recovery_failed'>; message: string; commit_retained?: false } | { ok: false; code: 'critical_recovery_failed'; message: string; commit_retained: true; commit_sha?: string };
 export type git_push_failed = { ok: false; code: 'push_failed'; message: string; commit_retained: true; commit_sha: string; committed_paths: string[]; recovery: string };
 export type git_publish_success = { ok: true; path: string; commit_retained?: true; commit_sha: string; push_status: 'pushed' };
 export type git_publish_result = git_publish_failure | git_push_failed | git_publish_success;
-export type git_transaction_inspection_input = { target_path: string; target_sha256: string; phase: 'git_pending' | 'ambiguous' };
+export type git_transaction_baseline = { pre_git_head: string; baseline_sha: string };
+export type git_transaction_inspection_input = { target_path: string; target_sha256: string; phase: 'git_pending' | 'ambiguous'; pre_git_head: string; baseline_sha: string };
 export type git_transaction_inspection = { state: 'not_committed' } | { state: 'committed_local'; commit_sha: string } | { state: 'pushed'; commit_sha: string } | { state: 'unknown' };
 
-export interface git_adapter { publish(input: git_publish_input): Promise<git_publish_result>; inspect_studio_transaction?(input: git_transaction_inspection_input): Promise<git_transaction_inspection>; }
+export interface git_adapter { capture_baseline(input: { target_path: string }): Promise<git_transaction_baseline>; publish(input: git_publish_input): Promise<git_publish_result>; inspect_studio_transaction?(input: git_transaction_inspection_input): Promise<git_transaction_inspection>; }
 export type git_command_runner = (file: string, args: readonly string[], cwd: string) => Promise<{ stdout: string; stderr: string }>;
 export type local_git_adapter_options = { repository_root: string; publication_branch: string; remote_name: string; writing_directory: string; command_runner?: git_command_runner };
 
@@ -41,6 +43,9 @@ const default_runner: git_command_runner = async (file, args, cwd) => {
 const sha256 = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex');
 const is_inside = (root: string, value: string): boolean => { const value_relative = relative(root, value); return value_relative !== '' && !value_relative.startsWith('..') && !isAbsolute(value_relative); };
 type directory_identity = { path: string; dev: number; ino: number };
+
+/** Identifies an expected Git command exit status without trusting arbitrary thrown values. */
+const is_git_exit_status = (cause: unknown, expected_status: number): boolean => typeof cause === 'object' && cause !== null && 'code' in cause && (cause as { code?: unknown }).code === expected_status;
 
 /** Publishes one verified Markdown article without changing unrelated Git state. */
 export class local_git_adapter implements git_adapter {
@@ -59,10 +64,24 @@ export class local_git_adapter implements git_adapter {
     this.command_runner = options.command_runner ?? default_runner;
   }
 
+  /** Captures a stable publication-branch HEAD for durable use before a Studio Git call. */
+  async capture_baseline(input: { target_path: string }): Promise<git_transaction_baseline> {
+    if (!this.safe_transaction_target(input.target_path)) throw new Error('Unsafe Studio transaction target.');
+    const canonical_root = await realpath(this.repository_root);
+    const git_root = await realpath(await this.run_git('rev-parse', '--show-toplevel'));
+    if (canonical_root !== git_root || !safe_branch_token(this.publication_branch) || !safe_remote_token(this.remote_name)) throw new Error('Studio Git configuration is not safe.');
+    const branch = await this.run_git('symbolic-ref', '--quiet', '--short', 'HEAD');
+    if (branch !== this.publication_branch || await this.is_shallow_repository()) throw new Error('Publication branch cannot provide a complete baseline.');
+    const pre_git_head = await this.run_git('rev-parse', 'HEAD');
+    const baseline_sha = await this.run_git('rev-parse', 'HEAD');
+    if (!/^[a-f0-9]{40}$/.test(pre_git_head) || pre_git_head !== baseline_sha) throw new Error('Publication HEAD changed while capturing baseline.');
+    return { pre_git_head, baseline_sha };
+  }
+
   async publish(input: git_publish_input): Promise<git_publish_result> {
     if (input.operation !== 'publish_new' && input.operation !== 'publish_update') return { ok: false, code: 'validation', message: 'Invalid publication operation.' };
     const source = new Uint8Array(input.source);
-    const snapshot = { ...input, source, commit_message: `${input.commit_message}`, slug: `${input.slug}`, expected_source_hash: input.expected_source_hash === undefined ? undefined : `${input.expected_source_hash}` };
+    const snapshot = { ...input, source, commit_message: `${input.commit_message}`, slug: `${input.slug}`, expected_source_hash: input.expected_source_hash === undefined ? undefined : `${input.expected_source_hash}`, expected_baseline_sha: input.expected_baseline_sha === undefined ? undefined : `${input.expected_baseline_sha}` };
     let canonical_root: string;
     try { canonical_root = await realpath(this.repository_root); } catch { return { ok: false, code: 'git_failed', message: 'Git publication failed; inspect the local repository state and retry.' }; }
     let queue_key = canonical_root;
@@ -77,20 +96,39 @@ export class local_git_adapter implements git_adapter {
 
   /** Inspects only local and remote Git state for a journaled transaction; it never mutates either repository. */
   async inspect_studio_transaction(input: git_transaction_inspection_input): Promise<git_transaction_inspection> {
-    if ((input.phase !== 'git_pending' && input.phase !== 'ambiguous') || !/^[a-f0-9]{64}$/.test(input.target_sha256) || !this.safe_transaction_target(input.target_path)) return { state: 'unknown' };
+    if ((input.phase !== 'git_pending' && input.phase !== 'ambiguous') || !/^[a-f0-9]{64}$/.test(input.target_sha256) || !/^[a-f0-9]{40}$/.test(input.pre_git_head) || !/^[a-f0-9]{40}$/.test(input.baseline_sha) || input.pre_git_head !== input.baseline_sha || !this.safe_transaction_target(input.target_path)) return { state: 'unknown' };
     try {
       const canonical_root = await realpath(this.repository_root);
       const git_root = await realpath(await this.run_git('rev-parse', '--show-toplevel'));
       if (canonical_root !== git_root) return { state: 'unknown' };
       const branch = await this.run_git('symbolic-ref', '--quiet', '--short', 'HEAD').catch(() => '');
       if (branch !== this.publication_branch || !safe_branch_token(this.publication_branch) || !safe_remote_token(this.remote_name)) return { state: 'unknown' };
+      if (await this.is_shallow_repository()) return { state: 'unknown' };
       if (await this.path_dirty(input.target_path)) return { state: 'unknown' };
-      const commit_sha = await this.run_git('log', '-1', '--format=%H', '--', input.target_path).catch(() => '');
-      if (!/^[a-f0-9]{40}$/.test(commit_sha)) return { state: 'not_committed' };
-      const committed = await this.committed_bytes(commit_sha, input.target_path).catch(() => undefined);
-      if (!committed || sha256(committed) !== input.target_sha256) return { state: 'not_committed' };
-      const remote_sha = (await this.run_git('ls-remote', this.remote_name, `refs/heads/${this.publication_branch}`).catch(() => '')).split(/\s+/)[0];
-      return remote_sha === commit_sha ? { state: 'pushed', commit_sha } : { state: 'committed_local', commit_sha };
+      const current_head = await this.run_git('rev-parse', 'HEAD');
+      if (!/^[a-f0-9]{40}$/.test(current_head)) return { state: 'unknown' };
+      await this.run_git('rev-parse', '--verify', `${input.baseline_sha}^{commit}`);
+      try { await this.run_git('merge-base', '--is-ancestor', input.baseline_sha, current_head); }
+      catch { return { state: 'unknown' }; }
+      const transaction_commits = (await this.run_git('rev-list', '--topo-order', `${input.baseline_sha}..${current_head}`, '--', input.target_path)).split('\n').filter((commit_sha) => /^[a-f0-9]{40}$/.test(commit_sha));
+      if (transaction_commits.length === 0) return { state: 'not_committed' };
+      let commit_sha: string | undefined;
+      for (const candidate_sha of transaction_commits) {
+        const committed = await this.committed_bytes(candidate_sha, input.target_path).catch(() => undefined);
+        if (committed && sha256(committed) === input.target_sha256) { commit_sha = candidate_sha; break; }
+      }
+      if (!commit_sha) return { state: 'unknown' };
+      const [remote_sha] = (await this.run_git('ls-remote', this.remote_name, `refs/heads/${this.publication_branch}`)).split(/\s+/);
+      if (remote_sha === undefined || !/^[a-f0-9]{40}$/.test(remote_sha)) return { state: 'unknown' };
+      if (remote_sha === commit_sha) return { state: 'pushed', commit_sha };
+      try { await this.run_git('cat-file', '-e', `${remote_sha}^{commit}`); }
+      catch { return { state: 'unknown' }; }
+      try {
+        await this.run_git('merge-base', '--is-ancestor', commit_sha, remote_sha);
+        return { state: 'pushed', commit_sha };
+      } catch (cause: unknown) {
+        return is_git_exit_status(cause, 1) ? { state: 'committed_local', commit_sha } : { state: 'unknown' };
+      }
     } catch { return { state: 'unknown' }; }
   }
 
@@ -99,9 +137,15 @@ export class local_git_adapter implements git_adapter {
     return output.stdout.trim();
   }
 
+  /** Reports whether this clone explicitly advertises incomplete shallow history. */
+  private async is_shallow_repository(): Promise<boolean> {
+    return (await this.run_git('rev-parse', '--is-shallow-repository')) === 'true';
+  }
+
   private async publish_locked(input: git_publish_input, canonical_root: string): Promise<git_publish_result> {
     if (!slug_pattern.test(input.slug) || !commit_message_pattern.test(input.commit_message) || input.commit_message.startsWith('-') || !safe_branch_token(this.publication_branch) || !safe_remote_token(this.remote_name) || !writing_directory_pattern.test(this.writing_directory)) return { ok: false, code: 'validation', message: 'Invalid publication input or configuration.' };
     if (input.operation === 'publish_update' && (!input.expected_source_hash || !/^[a-f0-9]{64}$/.test(input.expected_source_hash))) return { ok: false, code: 'validation', message: 'An update requires a SHA-256 expected_source_hash.' };
+    if (input.expected_baseline_sha !== undefined && !/^[a-f0-9]{40}$/.test(input.expected_baseline_sha)) return { ok: false, code: 'validation', message: 'The expected Git baseline is invalid.' };
     let commit_created = false; let retained_sha: string | undefined;
     try {
       const configured_root = canonical_root;
@@ -137,6 +181,7 @@ export class local_git_adapter implements git_adapter {
         if (sha256(current) !== input.expected_source_hash) return { ok: false, code: 'stale_source', message: 'Target article changed since it was read.' };
       }
       const old_head = await this.run_git('rev-parse', 'HEAD');
+      if (input.expected_baseline_sha !== undefined && old_head !== input.expected_baseline_sha) return { ok: false, code: 'baseline_changed', message: 'Publication branch advanced after the Studio baseline was captured; no Git changes were made.' };
       await this.atomic_write(target, input.source, writing_identity, target_stat?.mode);
       await this.run_git('add', '--', relative_path);
       await this.run_git('commit', '--only', '-m', input.commit_message, '--', relative_path); commit_created = true;

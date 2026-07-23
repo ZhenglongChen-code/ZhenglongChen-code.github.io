@@ -13,7 +13,7 @@ type transaction_status = 'in_progress' | 'completed' | 'recovery_required';
 type owned_object = { object_key: string; version_id: string; sha256: string };
 type pending_upload = { object_key: string; sha256: string };
 type studio_claim = { token: string; pid: number; created_at: string; payload_hash: string };
-type journal = { protocol_version: 1; request_id: string; payload_hash: string; status: transaction_status; phase: transaction_phase; target_path: string; target_sha256?: string; owned: owned_object[]; pending_upload?: pending_upload; commit_sha?: string; result?: studio_response };
+type journal = { protocol_version: 1; request_id: string; payload_hash: string; status: transaction_status; phase: transaction_phase; target_path: string; target_sha256?: string; pre_git_head?: string; baseline_sha?: string; owned: owned_object[]; pending_upload?: pending_upload; commit_sha?: string; result?: studio_response };
 type journal_event = 'before_write' | 'before_file_sync' | 'before_rename' | 'before_directory_sync';
 type process_state = 'active' | 'dead' | 'unknown';
 
@@ -68,15 +68,18 @@ const is_journal = (value: unknown, expected_request_id?: string): value is jour
   if (!is_record(value) || value.protocol_version !== 1 || typeof value.request_id !== 'string' || !request_id_pattern.test(value.request_id) || (expected_request_id !== undefined && value.request_id !== expected_request_id) || typeof value.payload_hash !== 'string' || !sha256_pattern.test(value.payload_hash) || (value.status !== 'in_progress' && value.status !== 'completed' && value.status !== 'recovery_required') || (value.phase !== 'pre_commit' && value.phase !== 'git_pending' && value.phase !== 'ambiguous' && value.phase !== 'committed' && value.phase !== 'pushed') || typeof value.target_path !== 'string' || !target_path_pattern.test(value.target_path) || !Array.isArray(value.owned) || !value.owned.every(is_owned_object) || new Set(value.owned.map((item) => item.object_key)).size !== value.owned.length) return false;
   if (value.pending_upload !== undefined && !is_pending_upload(value.pending_upload)) return false;
   if (value.target_sha256 !== undefined && (typeof value.target_sha256 !== 'string' || !sha256_pattern.test(value.target_sha256))) return false;
+  if (value.pre_git_head !== undefined && (typeof value.pre_git_head !== 'string' || !commit_sha_pattern.test(value.pre_git_head))) return false;
+  if (value.baseline_sha !== undefined && (typeof value.baseline_sha !== 'string' || !commit_sha_pattern.test(value.baseline_sha))) return false;
   if (value.commit_sha !== undefined && (typeof value.commit_sha !== 'string' || !commit_sha_pattern.test(value.commit_sha))) return false;
   if (value.result !== undefined && !is_studio_response(value.result)) return false;
   if (value.status === 'completed' && value.result === undefined) return false;
   if (value.status !== 'completed' && value.result !== undefined) return false;
-  if (value.phase === 'pre_commit') return value.target_sha256 === undefined && value.commit_sha === undefined && (value.status !== 'completed' || value.result?.kind === 'failed') && (value.pending_upload === undefined || value.status === 'in_progress');
-  if (value.phase === 'git_pending') return value.status === 'in_progress' && value.target_sha256 !== undefined && value.commit_sha === undefined && value.pending_upload === undefined;
-  if (value.phase === 'ambiguous') return value.status === 'recovery_required' && value.target_sha256 !== undefined && value.commit_sha === undefined && value.pending_upload === undefined;
-  if (value.phase === 'committed') return value.target_sha256 !== undefined && value.commit_sha !== undefined && value.pending_upload === undefined && ((value.status === 'completed' && value.result?.kind === 'committed_local' && value.result.commit_sha === value.commit_sha) || value.status === 'in_progress');
-  return value.target_sha256 !== undefined && value.commit_sha !== undefined && value.pending_upload === undefined && value.status === 'completed' && value.result?.kind === 'published' && value.result.commit_sha === value.commit_sha;
+  const durable_baseline = value.pre_git_head !== undefined && value.baseline_sha !== undefined && value.pre_git_head === value.baseline_sha;
+  if (value.phase === 'pre_commit') return value.target_sha256 === undefined && value.pre_git_head === undefined && value.baseline_sha === undefined && value.commit_sha === undefined && (value.status !== 'completed' || value.result?.kind === 'failed') && (value.pending_upload === undefined || value.status === 'in_progress');
+  if (value.phase === 'git_pending') return value.status === 'in_progress' && value.target_sha256 !== undefined && durable_baseline && value.commit_sha === undefined && value.pending_upload === undefined;
+  if (value.phase === 'ambiguous') return value.status === 'recovery_required' && value.target_sha256 !== undefined && durable_baseline && value.commit_sha === undefined && value.pending_upload === undefined;
+  if (value.phase === 'committed') return value.target_sha256 !== undefined && durable_baseline && value.commit_sha !== undefined && value.pending_upload === undefined && ((value.status === 'completed' && value.result?.kind === 'committed_local' && value.result.commit_sha === value.commit_sha) || value.status === 'in_progress');
+  return value.target_sha256 !== undefined && durable_baseline && value.commit_sha !== undefined && value.pending_upload === undefined && value.status === 'completed' && value.result?.kind === 'published' && value.result.commit_sha === value.commit_sha;
 };
 
 /** Reads and fully validates a journal before it can influence recovery decisions. */
@@ -238,19 +241,19 @@ export const reconcile_studio_git_transaction = async (journal_root: string, req
     const existing = await read_journal(path, request_id);
     if (!existing) return recovery('missing_journal', 'No transaction journal exists.');
     if (existing.status === 'completed') return existing.result!;
-    if ((existing.phase !== 'git_pending' && existing.phase !== 'ambiguous') || !existing.target_sha256) return recovery('not_git_pending', 'Only an ambiguous Git transaction can be reconciled here.');
+    if ((existing.phase !== 'git_pending' && existing.phase !== 'ambiguous') || !existing.target_sha256 || !existing.pre_git_head || !existing.baseline_sha) return recovery('not_git_pending', 'Only an ambiguous Git transaction can be reconciled here.');
     const acquired = await acquire_claim(claim_path(path), existing.payload_hash, dependencies.runtime);
     if (!acquired.acquired) return recovery('request_claimed', 'Transaction is actively claimed or needs explicit stale-claim recovery.');
     held_claim = acquired.claim;
     const current = await read_journal(path, request_id);
-    if (!current || current.payload_hash !== existing.payload_hash || (current.phase !== 'git_pending' && current.phase !== 'ambiguous') || !current.target_sha256) return recovery('journal_changed', 'Transaction state changed while claiming it.');
+    if (!current || current.payload_hash !== existing.payload_hash || (current.phase !== 'git_pending' && current.phase !== 'ambiguous') || !current.target_sha256 || !current.pre_git_head || !current.baseline_sha) return recovery('journal_changed', 'Transaction state changed while claiming it.');
     const inspect = dependencies.inspect ?? dependencies.git?.inspect_studio_transaction;
     if (!inspect) return recovery('git_inspector_unavailable', 'No read-only Git transaction inspector is configured.');
     let inspected: studio_git_recovery_state;
-    try { inspected = await inspect({ target_path: current.target_path, target_sha256: current.target_sha256, phase: current.phase }); }
+    try { inspected = await inspect({ target_path: current.target_path, target_sha256: current.target_sha256, phase: current.phase, pre_git_head: current.pre_git_head, baseline_sha: current.baseline_sha }); }
     catch { try { await mark_git_ambiguous(path, current, dependencies.runtime); } catch { /* durable git_pending still prohibits cleanup */ } return recovery('git_ambiguous', 'Git inspection failed; images were retained.'); }
     if (inspected.state === 'not_committed') {
-      await write_journal(path, { ...current, phase: 'pre_commit', status: 'in_progress', target_sha256: undefined }, dependencies.runtime);
+      await write_journal(path, { ...current, phase: 'pre_commit', status: 'in_progress', target_sha256: undefined, pre_git_head: undefined, baseline_sha: undefined }, dependencies.runtime);
       return recovery('git_not_committed', 'Git confirmed no commit and unchanged target; exact pre-commit cleanup or retry is available.');
     }
     if (inspected.state === 'committed_local') {
@@ -406,11 +409,15 @@ export const publish_article = async (input: unknown, dependencies: studio_publi
     let source: Uint8Array;
     try { source = new TextEncoder().encode(serialize_studio_article({ ...article, body: rewrite_markdown_images(article.body, urls), metadata: { ...article.metadata, ...snapshot.metadata, slug: snapshot.slug, assets: prepared.map(({ source_path, object_key, public_url }) => ({ source_path, object_key, public_url })) } })); }
     catch (cause: unknown) { return finish_precommit_failure(path, current, dependencies.cos, 'serialization_failed', cause instanceof Error ? cause.message.replace(/[\r\n].*/s, '') : 'Article serialization failed.', dependencies.runtime); }
-    const git_pending: journal = { ...current, phase: 'git_pending', pending_upload: undefined, target_sha256: sha256(source) };
+    let baseline: { pre_git_head: string; baseline_sha: string };
+    try { baseline = await dependencies.git.capture_baseline({ target_path: current.target_path }); }
+    catch { return recovery('baseline_capture_failed', 'Git baseline could not be captured; Git was not called.'); }
+    if (!commit_sha_pattern.test(baseline.pre_git_head) || !commit_sha_pattern.test(baseline.baseline_sha) || baseline.pre_git_head !== baseline.baseline_sha) return recovery('baseline_capture_failed', 'Git baseline was invalid; Git was not called.');
+    const git_pending: journal = { ...current, phase: 'git_pending', pending_upload: undefined, target_sha256: sha256(source), pre_git_head: baseline.pre_git_head, baseline_sha: baseline.baseline_sha };
     try { await write_journal(path, git_pending, dependencies.runtime); current = git_pending; }
-    catch { return recovery('journal_failure', 'Git was not called because its durable pending marker could not be written.'); }
+    catch { return recovery('baseline_persist_failed', 'Git baseline could not be durably journaled; Git was not called.'); }
     let git_result: git_publish_result;
-    try { git_result = await dependencies.git.publish({ operation: snapshot.kind, slug: snapshot.slug, source, commit_message: snapshot.commit_message, ...(snapshot.kind === 'publish_update' ? { expected_source_hash: snapshot.expected_source_hash } : {}) }); }
+    try { git_result = await dependencies.git.publish({ operation: snapshot.kind, slug: snapshot.slug, source, commit_message: snapshot.commit_message, expected_baseline_sha: baseline.baseline_sha, ...(snapshot.kind === 'publish_update' ? { expected_source_hash: snapshot.expected_source_hash } : {}) }); }
     catch { try { await mark_git_ambiguous(path, current, dependencies.runtime); } catch { /* git_pending itself prohibits cleanup */ } return recovery('git_ambiguous', 'Git threw after its durable pending marker; images were retained.'); }
     if (!git_result.ok && git_result.commit_retained === true) {
       if (!git_result.commit_sha) { try { await mark_git_ambiguous(path, current, dependencies.runtime); } catch { /* git_pending itself prohibits cleanup */ } return recovery('git_ambiguous', 'Git may have retained a commit; images were retained.'); }
@@ -419,7 +426,7 @@ export const publish_article = async (input: unknown, dependencies: studio_publi
       catch { return recovery('journal_failure', 'Git retained a commit and images were retained because its result was not journaled.'); }
       return result;
     }
-    if (!git_result.ok) return finish_precommit_failure(path, { ...current, phase: 'pre_commit', target_sha256: undefined }, dependencies.cos, git_result.code, git_result.message, dependencies.runtime);
+    if (!git_result.ok) return finish_precommit_failure(path, { ...current, phase: 'pre_commit', target_sha256: undefined, pre_git_head: undefined, baseline_sha: undefined }, dependencies.cos, git_result.code, git_result.message, dependencies.runtime);
     const committed: journal = { ...current, phase: 'committed', commit_sha: git_result.commit_sha };
     try { await write_journal(path, committed, dependencies.runtime); }
     catch { return { protocol_version: 1, kind: 'committed_local', commit_sha: git_result.commit_sha, recovery: 'Git succeeded but transaction finalization was not durable; inspect the journal before retrying.' }; }
