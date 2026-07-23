@@ -6,6 +6,10 @@ tags: [工程, 数学]
 language: zh
 featured: false
 draft: false
+social:
+  zhihu: false
+  wechat: false
+  xiaohongshu: false
 ---
 
 这篇公开文章用于检查概率表达式 $p(y \mid x, I)$ 是否以行内公式显示。
