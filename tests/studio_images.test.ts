@@ -182,4 +182,33 @@ describe('studio_images', () => {
     expect(() => new tencent_cos_adapter({ secret_id: 'id\n', secret_key: 'key', region: 'ap-shanghai', bucket: 'bucket-1234567890', root_prefix: 'latent-field', public_base_url: 'https://cdn.example.com\\evil' }, factory)).toThrow(/invalid/i);
     expect(calls).toBe(0);
   });
+
+  it('rejects recursively encoded traversal in rewrite and paired source paths', async () => {
+    const bytes = await png_bytes();
+    const options = { root_prefix: 'latent-field', public_base_url: 'https://cdn.example.com', year: 2026, slug: 'vlm-evaluation', max_bytes: 1_000_000, max_pixels: 1_000_000, max_width: 100, max_height: 100 };
+    expect(rewrite_markdown_images('![x](%252e%252e/a.png) ![ok](a.png)', new Map([['%252e%252e/a.png', 'https://x/no'], ['a.png', 'https://x/ok']]))).toBe('![x](%252e%252e/a.png) ![ok](https://x/ok)');
+    await expect(prepare_article_images([{ source_path: '%252e%252e/a.png', bytes, claimed_content_type: 'image/png', intent: 'diagram', semantic_name: 'map' }], options)).rejects.toMatchObject({ code: 'validation' });
+  });
+
+  it('accepts exactly builder-shaped figure sequences at the adapter boundary', async () => {
+    const client = { headObject: async () => ({ headers: { 'x-cos-meta-sha256': 'a'.repeat(64) } }), putObject: async () => ({}), deleteObject: async () => ({}) };
+    const adapter = new tencent_cos_adapter({ secret_id: 'id', secret_key: 'key', region: 'ap-shanghai', bucket: 'bucket-1234567890', root_prefix: 'latent-field', public_base_url: 'https://cdn.example.com' }, () => client);
+    for (const figure of [1, 9, 10, 100]) await expect(adapter.inspect_object(build_article_object_key({ root_prefix: 'latent-field', year: 2026, slug: 'vlm-evaluation', figure_number: figure, semantic_name: 'map', extension: 'webp' }))).resolves.toBeDefined();
+    for (const sequence of ['00', '0001', '010']) await expect(adapter.inspect_object(`latent-field/articles/2026/vlm-evaluation/fig-${sequence}-map.webp`)).rejects.toMatchObject({ code: 'validation' });
+  });
+
+  it('rejects raw and encoded C0/C1 controls in public bases and credentials', async () => {
+    const bytes = await png_bytes();
+    const options = { root_prefix: 'latent-field', year: 2026, slug: 'vlm-evaluation', max_bytes: 1_000_000, max_pixels: 1_000_000, max_width: 100, max_height: 100 };
+    for (const public_base_url of ['https://cdn.example.com/\u0001x', 'https://cdn.example.com/%00x', 'https://cdn.example.com/%80x']) await expect(prepare_article_images([{ source_path: 'x.png', bytes, claimed_content_type: 'image/png', intent: 'diagram', semantic_name: 'x' }], { ...options, public_base_url })).rejects.toMatchObject({ code: 'validation' });
+    expect(() => new tencent_cos_adapter({ secret_id: 'id\u0080', secret_key: 'key', region: 'ap-shanghai', bucket: 'bucket-1234567890', root_prefix: 'latent-field', public_base_url: 'https://cdn.example.com' })).toThrow(/invalid/i);
+  });
+
+  it('normalizes valid uppercase remote digests before idempotent reuse', async () => {
+    const prepared = (await prepare_article_images([{ source_path: 'x.png', bytes: await png_bytes(), claimed_content_type: 'image/png', intent: 'diagram', semantic_name: 'map' }], { root_prefix: 'latent-field', public_base_url: 'https://cdn.example.com', year: 2026, slug: 'vlm-evaluation', max_bytes: 1_000_000, max_pixels: 1_000_000, max_width: 100, max_height: 100 })).images;
+    const image = prepared[0]!;
+    const client = { headObject: async () => ({ headers: { 'x-cos-meta-sha256': image.sha256.toUpperCase() } }), putObject: async () => ({}), deleteObject: async () => ({}) };
+    const adapter = new tencent_cos_adapter({ secret_id: 'id', secret_key: 'key', region: 'ap-shanghai', bucket: 'bucket-1234567890', root_prefix: 'latent-field', public_base_url: 'https://cdn.example.com' }, () => client);
+    await expect(publish_prepared_images(prepared, adapter)).resolves.toMatchObject({ objects: [{ status: 'reused' }] });
+  });
 });

@@ -28,18 +28,19 @@ const root_prefix = (value: string): string => {
   if (!value || value.startsWith('/') || value.endsWith('/') || value.includes('\\') || value.split('/').some((part) => !component_pattern.test(part))) invalid('Invalid root prefix.');
   return value;
 };
+const decoded_path_segment = (value: string): string | undefined => { try { const decoded = decodeURIComponent(value); return /%(?:[0-9a-f]{2})/i.test(decoded) ? undefined : decoded; } catch { return undefined; } };
 const public_url = (base: string, object_key: string): string => {
   let parsed: URL;
   try { parsed = new URL(base); } catch { return invalid('Invalid public base URL.'); }
   const raw_path = base.replace(/^https:\/\/[^/]+/, '');
-  if (base.trim() !== base || base.includes('\\') || /%(?:2f|5c|2e)/i.test(base) || parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.search || parsed.hash || /\/(?:\.{1,2})(?:\/|$)/.test(raw_path) || raw_path.includes('//')) invalid('Invalid public base URL.');
+  const decoded_segments = raw_path.split('/').map(decoded_path_segment);
+  if (base.trim() !== base || /[\x00-\x1f\x7f-\x9f]/.test(base) || base.includes('\\') || /%(?:2f|5c|2e)/i.test(base) || decoded_segments.some((segment) => segment === undefined || /[\x00-\x1f\x7f-\x9f]/.test(segment)) || parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.search || parsed.hash || /\/(?:\.{1,2})(?:\/|$)/.test(raw_path) || raw_path.includes('//')) invalid('Invalid public base URL.');
   const base_path = parsed.pathname.replace(/\/$/, '');
   return `${parsed.origin}${base_path}/${object_key.split('/').map(encodeURIComponent).join('/')}`;
 };
 const valid_source_path = (source_path: string): boolean => {
   if (!source_path || /[\\\x00-\x1f\x7f\s]/.test(source_path) || /[^\x00-\x7f]/.test(source_path) || /[?#]/.test(source_path) || source_path.startsWith('/') || source_path.startsWith('//') || /^[a-z][a-z0-9+.-]*:/i.test(source_path)) return false;
-  let decoded: string;
-  try { decoded = decodeURIComponent(source_path); } catch { return false; }
+  const decoded = decoded_path_segment(source_path); if (decoded === undefined) return false;
   const normalized = decoded.startsWith('./') ? decoded.slice(2) : decoded;
   if (/%(?:2f|5c|2e)/i.test(source_path) || /[\\\x00-\x1f\x7f\s]/.test(decoded) || /[^\x00-\x7f]/.test(decoded) || !normalized || normalized.split('/').some((part) => part === '' || part === '.' || part === '..')) return false;
   return /^(?:\.?\/?[a-zA-Z0-9][a-zA-Z0-9._/-]*)\.(?:png|jpe?g)$/i.test(source_path);
@@ -47,8 +48,7 @@ const valid_source_path = (source_path: string): boolean => {
 const canonical_local_destination = (value: string): string | undefined => {
   if (/^(?:[a-z][a-z0-9+.-]*:|\/|#|\?)/i.test(value) || /[\\\x00-\x1f\x7f?#]/.test(value)) return undefined;
   if (/%(?:2f|5c)/i.test(value)) return undefined;
-  let decoded: string;
-  try { decoded = decodeURIComponent(value); } catch { return undefined; }
+  const decoded = decoded_path_segment(value); if (decoded === undefined) return undefined;
   const normalized = decoded.startsWith('./') ? decoded.slice(2) : decoded;
   if (!normalized || normalized.startsWith('./')) return undefined;
   const segments = normalized.split('/');
@@ -147,12 +147,12 @@ export type tencent_cos_config = { secret_id: string; secret_key: string; region
 type cos_client = { headObject(input: { Bucket: string; Region: string; Key: string }): Promise<{ headers?: Record<string, string | undefined> }>; putObject(input: { Bucket: string; Region: string; Key: string; Body: Buffer; ContentLength: number; ContentType: string; 'x-cos-meta-sha256': string }): Promise<unknown>; deleteObject(input: { Bucket: string; Region: string; Key: string }): Promise<unknown> };
 type cos_client_factory = (config: tencent_cos_config) => cos_client;
 const valid_cos_config = (config: tencent_cos_config): void => {
-  if (!config.secret_id.trim() || !config.secret_key.trim() || /[\x00-\x20\x7f]/.test(config.secret_id) || /[\x00-\x20\x7f]/.test(config.secret_key) || !/^(?:ap|na|eu|sa|cn)-[a-z0-9]+(?:-[a-z0-9]+)*$/.test(config.region) || !/^[a-z0-9]+(?:-[a-z0-9]+)*-\d{10}$/.test(config.bucket)) invalid('Invalid COS configuration.');
+  if (!config.secret_id.trim() || !config.secret_key.trim() || /[\x00-\x20\x7f-\x9f]/.test(config.secret_id) || /[\x00-\x20\x7f-\x9f]/.test(config.secret_key) || !/^(?:ap|na|eu|sa|cn)-[a-z0-9]+(?:-[a-z0-9]+)*$/.test(config.region) || !/^[a-z0-9]+(?:-[a-z0-9]+)*-\d{10}$/.test(config.bucket)) invalid('Invalid COS configuration.');
   root_prefix(config.root_prefix); public_url(config.public_base_url, 'test');
 };
 const valid_adapter_key = (object_key: string, prefix: string): void => {
   const prefix_parts = prefix.split('/'); const parts = object_key.split('/'); const tail = parts.slice(prefix_parts.length);
-  if (parts.slice(0, prefix_parts.length).join('/') !== prefix || tail.length !== 4 || tail[0] !== 'articles' || !/^[2-9]\d{3}$/.test(tail[1]!) || !component_pattern.test(tail[2]!) || !/^(?:cover\.webp|fig-\d{2,}-[a-z0-9]+(?:-[a-z0-9]+)*\.(?:webp|png))$/.test(tail[3]!)) invalid('Invalid COS object key.');
+  if (parts.slice(0, prefix_parts.length).join('/') !== prefix || tail.length !== 4 || tail[0] !== 'articles' || !/^[2-9]\d{3}$/.test(tail[1]!) || !component_pattern.test(tail[2]!) || !/^(?:cover\.webp|fig-(?:0[1-9]|[1-9]\d+)-[a-z0-9]+(?:-[a-z0-9]+)*\.(?:webp|png))$/.test(tail[3]!)) invalid('Invalid COS object key.');
 };
 /** Tencent COS adapter. Construction is local-only and does not initiate network traffic. */
 export class tencent_cos_adapter implements cos_adapter {
@@ -161,7 +161,7 @@ export class tencent_cos_adapter implements cos_adapter {
     valid_cos_config(config);
     this.client = client_factory(config);
   }
-  async inspect_object(object_key: string): Promise<{ sha256: string } | undefined> { valid_adapter_key(object_key, this.config.root_prefix); try { const result = await this.client.headObject({ Bucket: this.config.bucket, Region: this.config.region, Key: object_key }); const value = result.headers?.['x-cos-meta-sha256']; if (typeof value !== 'string' || !/^[a-f0-9]{64}$/i.test(value)) throw new studio_image_error('missing_remote_digest', `COS object lacks a valid sha256 digest: ${object_key}`); return { sha256: value }; } catch (error: unknown) { if (typeof error === 'object' && error !== null && 'statusCode' in error && (error as { statusCode?: unknown }).statusCode === 404) return undefined; throw error; } }
+  async inspect_object(object_key: string): Promise<{ sha256: string } | undefined> { valid_adapter_key(object_key, this.config.root_prefix); try { const result = await this.client.headObject({ Bucket: this.config.bucket, Region: this.config.region, Key: object_key }); const value = result.headers?.['x-cos-meta-sha256']; if (typeof value !== 'string' || !/^[a-f0-9]{64}$/i.test(value)) throw new studio_image_error('missing_remote_digest', `COS object lacks a valid sha256 digest: ${object_key}`); return { sha256: value.toLowerCase() }; } catch (error: unknown) { if (typeof error === 'object' && error !== null && 'statusCode' in error && (error as { statusCode?: unknown }).statusCode === 404) return undefined; throw error; } }
   async upload_object(input: prepared_image): Promise<void> { valid_adapter_key(input.object_key, this.config.root_prefix); await this.client.putObject({ Bucket: this.config.bucket, Region: this.config.region, Key: input.object_key, Body: Buffer.from(input.bytes), ContentLength: input.bytes.byteLength, ContentType: input.content_type, 'x-cos-meta-sha256': input.sha256 }); }
   async delete_object(object_key: string): Promise<void> { valid_adapter_key(object_key, this.config.root_prefix); await this.client.deleteObject({ Bucket: this.config.bucket, Region: this.config.region, Key: object_key }); }
 }
