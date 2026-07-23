@@ -228,7 +228,13 @@ const static_asset = async (studio_dist: string, pathname: string): Promise<{ by
 };
 
 /** Detects an oversized base64 image from its encoded length before any binary decode allocates memory. */
-const has_oversized_encoded_image = (input: unknown, image_max_bytes: number): boolean => is_record(input) && Array.isArray(input.images) && input.images.some((image) => is_record(image) && typeof image.bytes_base64 === 'string' && Math.floor(image.bytes_base64.length / 4) * 3 > image_max_bytes);
+const has_oversized_encoded_image = (input: unknown, image_max_bytes: number): boolean => is_record(input) && Array.isArray(input.images) && input.images.some((image) => {
+  if (!is_record(image) || typeof image.bytes_base64 !== 'string') return false;
+  const value = image.bytes_base64;
+  if (value.length % 4 !== 0) return false;
+  const padding = value.endsWith('==') ? 2 : value.endsWith('=') ? 1 : 0;
+  return value.length / 4 * 3 - padding > image_max_bytes;
+});
 
 /** Creates the explicit-route, loopback-only local Studio server for CLI use and isolated tests. */
 export const create_studio_server = (options: studio_server_options = {}): studio_server => {

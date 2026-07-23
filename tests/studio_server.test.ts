@@ -171,6 +171,14 @@ describe('local Markdown Studio server', () => {
     expect(response.status).toBe(413);
   });
 
+  it('uses canonical base64 decoded length at the image limit boundary', async () => {
+    const publish = async () => ({ protocol_version: 1 as const, kind: 'failed' as const, errors: [] });
+    const { base_url, instance } = await start_server({ request_max_bytes: 512, image_max_bytes: 1, publish });
+    const request_with = async (bytes_base64: string): Promise<Response> => request(base_url, '/api/publish', { method: 'POST', body: JSON.stringify({ ...valid_publish_request, images: [{ source_path: 'figure.png', bytes_base64, claimed_content_type: 'image/png', intent: 'diagram', semantic_name: 'figure' }] }), headers: { 'Content-Type': 'application/json', 'x-studio-token': instance.session_token } });
+    expect((await request_with('AQ==')).status).toBe(200);
+    expect((await request_with('AQI=')).status).toBe(413);
+  });
+
   it('rejects a DNS-rebinding Host header even with a local URL target', async () => {
     const { base_url } = await start_server();
 

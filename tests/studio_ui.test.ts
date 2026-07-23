@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, test } from 'vitest';
-import { feedback_should_focus, is_current_import, is_latest_preview, next_import_sequence, next_tab_index, normalize_article_metadata, safe_storage_get, safe_storage_remove, safe_storage_set } from '../studio/src/main';
+import { feedback_should_focus, is_current_import, is_latest_preview, next_import_sequence, next_tab_index, normalize_article_metadata, publication_feedback, reconcile_image_pairs, safe_storage_get, safe_storage_remove, safe_storage_set } from '../studio/src/main';
 
 const read_source = (path: string): string => readFileSync(resolve(process.cwd(), path), 'utf8');
 
@@ -54,7 +54,7 @@ describe('local markdown studio UI contract', () => {
     expect(main).toContain("'/api/preview'");
     expect(main).toContain('server-sanitized');
     expect(main).toContain('new Map<string, File>()');
-    expect(main).toContain("image_input.accept = 'image/*'");
+    expect(main).toContain("image_input.accept = 'image/jpeg,image/png'");
     expect(main).toContain("row.dataset.sourcePath = source_path");
     expect(main).toContain("row.addEventListener('drop'");
     expect(main).toContain('AbortController');
@@ -89,6 +89,21 @@ describe('local markdown studio UI contract', () => {
     const draft_type = main.slice(main.indexOf('type studio_draft'), main.indexOf('type storage_adapter'));
     expect(draft_type).not.toContain('session_token');
     expect(main).not.toContain("safe_storage_set(get_storage(), 'session_token'");
+  });
+
+  test('drops stale image pairings and keeps only currently referenced images in source order', () => {
+    const files = new Map<string, File>([['old.png', new File(['a'], 'old.png', { type: 'image/png' })], ['current.jpg', new File(['b'], 'current.jpg', { type: 'image/jpeg' })]]);
+    const intents = new Map<string, 'photo' | 'screenshot' | 'diagram'>([['old.png', 'diagram'], ['current.jpg', 'photo']]);
+    const urls = { 'old.png': 'https://assets.example/old.png', 'current.jpg': 'https://assets.example/current.jpg' };
+    const result = reconcile_image_pairs(['current.jpg'], files, intents, urls);
+    expect([...result.files.keys()]).toEqual(['current.jpg']);
+    expect([...result.intents.entries()]).toEqual([['current.jpg', 'photo']]);
+    expect(result.urls).toEqual({ 'current.jpg': 'https://assets.example/current.jpg' });
+  });
+
+  test('maps structured publication errors to actionable fixed text', () => {
+    expect(publication_feedback({ kind: 'failed', errors: [{ code: 'stale_source', field: 'slug', message: 'secret path' }] })).toContain('changed since it was loaded');
+    expect(publication_feedback({ kind: 'recovery_required', errors: [{ code: 'git_ambiguous', message: 'secret path' }] })).toContain('Inspect the local Git state');
   });
 
   test('invalidates an in-flight preview before the next debounce window', () => {

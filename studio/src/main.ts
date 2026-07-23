@@ -18,7 +18,9 @@ type article_metadata = {
 type studio_asset = { source_path: string; object_key: string; public_url: string };
 type preview_request = { markdown: string; metadata: article_metadata };
 type preview_response = { preview_html: string; metadata: Partial<article_metadata>; unresolved_images: string[]; publish_configured?: boolean };
-type publish_result = { kind: 'published'; public_url: string; commit_sha: string } | { kind: 'committed_local'; commit_sha: string; recovery: string } | { kind: 'failed'; errors: { code: string; message: string }[] } | { kind: 'recovery_required'; errors: { code: string; message: string }[] };
+type image_intent = 'photo' | 'screenshot' | 'diagram';
+type publish_error = { code: string; field?: string; message: string };
+type publish_result = { kind: 'published'; public_url: string; commit_sha: string } | { kind: 'committed_local'; commit_sha: string; recovery: string } | { kind: 'failed'; errors: publish_error[] } | { kind: 'recovery_required'; errors: publish_error[] };
 type studio_draft = { markdown: string; metadata: article_metadata; image_urls: Record<string, string> };
 type storage_adapter = { getItem: (key: string) => string | null; setItem: (key: string, value: string) => void; removeItem: (key: string) => void };
 
@@ -54,6 +56,19 @@ export const safe_storage_set = (storage: storage_adapter | undefined, key: stri
 /** Removes invalid local state without surfacing storage permission failures. */
 export const safe_storage_remove = (storage: storage_adapter | undefined, key: string): boolean => { try { storage?.removeItem(key); return storage !== undefined; } catch { return false; } };
 
+/** Retains only image pairings still referenced by current Markdown, in source order. */
+export const reconcile_image_pairs = (sources: readonly string[], files: ReadonlyMap<string, File>, intents: ReadonlyMap<string, image_intent>, urls: Readonly<Record<string, string>>): { files: Map<string, File>; intents: Map<string, image_intent>; urls: Record<string, string> } => {
+  const next_files = new Map<string, File>(); const next_intents = new Map<string, image_intent>(); const next_urls: Record<string, string> = {};
+  for (const source of sources) { const file = files.get(source); if (file) next_files.set(source, file); const intent = intents.get(source); if (intent) next_intents.set(source, intent); if (urls[source]) next_urls[source] = urls[source]!; }
+  return { files: next_files, intents: next_intents, urls: next_urls };
+};
+
+/** Maps server-controlled result codes to fixed browser-safe recovery guidance. */
+export const publication_feedback = (result: Extract<publish_result, { kind: 'failed' | 'recovery_required' }>): string => {
+  const messages = result.errors.map((error) => error.code === 'image_pairing' ? 'Pair every referenced image.' : error.code === 'stale_source' ? 'The article changed since it was loaded; re-import it before updating.' : error.code === 'request_id_conflict' ? 'This publication request conflicted; retry from the current draft.' : error.code.includes('git') || error.code.includes('push') ? 'Inspect the local Git state and push normally without force.' : error.code === 'validation' ? `Correct ${error.field ?? 'the highlighted fields'} and retry.` : 'Publication needs local review before retrying.');
+  return [...new Set(messages)].join(' ');
+};
+
 const initialize_studio = (): void => {
 
 const draft_key = 'latent_field_studio_draft_v1';
@@ -85,6 +100,7 @@ const publish_update = by_id<HTMLButtonElement>('publish-update');
 let preview_timeout: number | undefined;
 let image_urls: Record<string, string> = {};
 const image_files = new Map<string, File>();
+const image_intents = new Map<string, image_intent>();
 let unresolved_sources: string[] = [];
 let publish_is_configured = false;
 let preview_controller: AbortController | undefined;
@@ -162,6 +178,7 @@ const restore_draft = (): void => {
 
 const reset_document_state = (): void => {
   image_files.clear();
+  image_intents.clear();
   image_urls = {};
   unresolved_sources = [];
   expected_source_hash = undefined;
@@ -175,14 +192,19 @@ const reset_document_state = (): void => {
 
 const pair_image_file = (source_path: string, file: File | undefined): void => {
   if (!file) return;
-  if (!file.type.startsWith('image/')) { announce(`Select an image file for ${source_path}.`, 'validation'); return; }
+  if (file.type !== 'image/jpeg' && file.type !== 'image/png') { announce(`Select a JPEG or PNG image for ${source_path}.`, 'validation'); return; }
   image_files.set(source_path, file);
+  if (!image_intents.has(source_path)) image_intents.set(source_path, file.type === 'image/jpeg' ? 'photo' : 'diagram');
   render_images(unresolved_sources);
   persist_draft();
   announce(`${file.name} selected for ${source_path}.`);
 };
 
 const render_images = (images: string[]): void => {
+  const pairs = reconcile_image_pairs(images, image_files, image_intents, image_urls);
+  image_files.clear(); pairs.files.forEach((file, source) => image_files.set(source, file));
+  image_intents.clear(); pairs.intents.forEach((intent, source) => image_intents.set(source, intent));
+  image_urls = pairs.urls;
   unresolved_sources = images;
   unresolved_images.replaceChildren();
   if (images.length === 0) { unresolved_images.textContent = 'No local image references detected.'; return; }
@@ -193,18 +215,20 @@ const render_images = (images: string[]): void => {
     row.setAttribute('role', 'group');
     row.setAttribute('aria-label', `Image pairing target for ${source_path}. Drop one image file here or use Select image.`);
     const label = document.createElement('strong'); label.textContent = source_path;
-    const image_input = document.createElement('input'); image_input.type = 'file'; image_input.accept = 'image/*'; image_input.setAttribute('aria-label', `Select local image for ${source_path}`);
+    const image_input = document.createElement('input'); image_input.type = 'file'; image_input.accept = 'image/jpeg,image/png'; image_input.setAttribute('aria-label', `Select local image for ${source_path}`);
     const select_image = document.createElement('button'); select_image.type = 'button'; select_image.textContent = 'Select image'; select_image.setAttribute('aria-label', `Select local image for ${source_path}`);
     const selected = document.createElement('span'); selected.textContent = image_files.get(source_path) ? `Selected file: ${image_files.get(source_path)?.name}` : 'No local image selected.';
+    const intent = document.createElement('select'); intent.setAttribute('aria-label', `Image intent for ${source_path}`); for (const value of ['photo', 'screenshot', 'diagram'] as const) { const option = document.createElement('option'); option.value = value; option.textContent = value; intent.append(option); } intent.value = image_intents.get(source_path) ?? (image_files.get(source_path)?.type === 'image/jpeg' ? 'photo' : 'diagram');
     const url = document.createElement('input'); url.type = 'url'; url.value = image_urls[source_path] ?? ''; url.placeholder = 'Final https:// image URL'; url.setAttribute('aria-label', `Final URL placeholder for ${source_path}`);
     const final_url = document.createElement('span'); final_url.textContent = url.value ? `Final URL: ${url.value}` : 'Final URL placeholder — supplied after upload.';
     const save_url = (): void => { image_urls = { ...image_urls, [source_path]: url.value.trim() }; final_url.textContent = url.value ? `Final URL: ${url.value}` : 'Final URL placeholder — supplied after upload.'; persist_draft(); };
     image_input.addEventListener('change', () => pair_image_file(source_path, image_input.files?.[0]));
+    intent.addEventListener('change', () => { image_intents.set(source_path, intent.value as image_intent); persist_draft(); });
     select_image.addEventListener('click', () => image_input.click());
     url.addEventListener('input', save_url);
     row.addEventListener('dragover', (event) => { event.preventDefault(); event.stopPropagation(); });
-    row.addEventListener('drop', (event) => { event.preventDefault(); event.stopPropagation(); const image_file = [...(event.dataTransfer?.files ?? [])].find((file) => file.type.startsWith('image/')); if (!image_file) { announce(`Drop one image file for ${source_path}.`, 'validation'); return; } pair_image_file(source_path, image_file); announce(`${image_file.name} paired with ${source_path}.`); });
-    row.append(label, image_input, select_image, selected, url, final_url); unresolved_images.append(row);
+    row.addEventListener('drop', (event) => { event.preventDefault(); event.stopPropagation(); const image_file = [...(event.dataTransfer?.files ?? [])].find((file) => file.type === 'image/jpeg' || file.type === 'image/png'); if (!image_file) { announce(`Drop one JPEG or PNG image for ${source_path}.`, 'validation'); return; } pair_image_file(source_path, image_file); announce(`${image_file.name} paired with ${source_path}.`); });
+    row.append(label, image_input, select_image, selected, intent, url, final_url); unresolved_images.append(row);
   }
 };
 
@@ -314,15 +338,15 @@ const publish = async (mode: 'new' | 'update'): Promise<void> => {
   publish_in_flight = true;
   update_publish_state(publish_is_configured);
   try {
-    const images = await Promise.all([...image_files.entries()].map(async ([source_path, file]) => ({ source_path, bytes_base64: await image_base64(file), claimed_content_type: file.type === 'image/jpeg' ? 'image/jpeg' as const : 'image/png' as const, intent: 'diagram' as const, semantic_name: semantic_image_name(source_path) })));
+    const images = await Promise.all(unresolved_sources.map(async (source_path) => { const file = image_files.get(source_path)!; return { source_path, bytes_base64: await image_base64(file), claimed_content_type: file.type === 'image/jpeg' ? 'image/jpeg' as const : 'image/png' as const, intent: image_intents.get(source_path) ?? (file.type === 'image/jpeg' ? 'photo' : 'diagram'), semantic_name: semantic_image_name(source_path) }; }));
     const { slug, assets: _assets, ...protocol_metadata } = metadata;
     const request = { protocol_version: 1 as const, kind: mode === 'new' ? 'publish_new' as const : 'publish_update' as const, request_id: crypto.randomUUID().toLowerCase(), slug, year, markdown: source_input.value, metadata: protocol_metadata, ...(images.length ? { images } : {}), commit_message: `content: publish ${slug}`, ...(mode === 'update' ? { expected_source_hash } : {}) };
     const response = await fetch('/api/publish', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-studio-token': session_token }, body: JSON.stringify(request) });
     const result = await response.json() as publish_result;
-    if (result.kind === 'failed' || result.kind === 'recovery_required') throw new Error(result.errors.map((error) => error.message).join(' '));
+    if (result.kind === 'failed' || result.kind === 'recovery_required') { announce(publication_feedback(result), 'publish'); return; }
     if (!response.ok) throw new Error('Publication failed.');
     if (result.kind === 'published') announce(`Published ${result.commit_sha}. ${result.public_url}`, 'publish');
-    else announce(`Committed locally: ${result.commit_sha}. ${result.recovery}`, 'publish');
+    else announce(`Committed locally: ${result.commit_sha}. Push or recover it manually before retrying.`, 'publish');
   } catch {
     announce('Publication could not be completed. Your draft remains local.', 'publish');
   } finally {
@@ -354,7 +378,7 @@ workspace.addEventListener('dragover', (event) => { event.preventDefault(); work
 workspace.addEventListener('dragleave', () => workspace.classList.remove('is-dropping'));
 workspace.addEventListener('drop', (event) => { event.preventDefault(); workspace.classList.remove('is-dropping'); void import_file(event.dataTransfer?.files[0]); });
 unresolved_images.addEventListener('dragover', (event) => { event.preventDefault(); event.stopPropagation(); });
-unresolved_images.addEventListener('drop', (event) => { event.preventDefault(); event.stopPropagation(); const image_file = [...(event.dataTransfer?.files ?? [])].find((file) => file.type.startsWith('image/')); if (!image_file) { announce('Drop an image file to pair it with a local image reference.', 'validation'); return; } if (unresolved_sources.length !== 1) { announce('Choose the unresolved image target before dropping a file.', 'validation'); return; } pair_image_file(unresolved_sources[0] as string, image_file); });
+unresolved_images.addEventListener('drop', (event) => { event.preventDefault(); event.stopPropagation(); const image_file = [...(event.dataTransfer?.files ?? [])].find((file) => file.type === 'image/jpeg' || file.type === 'image/png'); if (!image_file) { announce('Drop a JPEG or PNG image to pair it with a local image reference.', 'validation'); return; } if (unresolved_sources.length !== 1) { announce('Choose the unresolved image target before dropping a file.', 'validation'); return; } pair_image_file(unresolved_sources[0] as string, image_file); });
 editor_tab.addEventListener('click', () => select_tab(0));
 preview_tab.addEventListener('click', () => select_tab(1));
 [editor_tab, preview_tab].forEach((tab, current_index) => tab.addEventListener('keydown', (event) => { const selected_index = next_tab_index(current_index, event.key, 2); if (selected_index !== current_index) { event.preventDefault(); select_tab(selected_index, true); } }));
