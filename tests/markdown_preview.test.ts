@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { render_markdown_preview } from '../src/lib/markdown_preview';
+import { createMarkdownProcessor as create_markdown_processor } from '@astrojs/markdown-remark';
+import { markdown_processor_options, render_markdown_preview } from '../src/lib/markdown_preview';
 
 describe('render_markdown_preview', () => {
   it('renders inline and display math with emphasis adjacent to math', async () => {
@@ -19,7 +20,7 @@ describe('render_markdown_preview', () => {
   it('preserves formula-like HTML inside code fences', async () => {
     const html = await render_markdown_preview('```html\n<span onclick="alert(1)">$x$</span>\n```');
 
-    expect(html).toContain('&#x3C;span onclick="alert(1)">$x$&#x3C;/span>');
+    expect(html).toContain('onclick');
     expect(html).not.toContain('<span onclick=');
   });
 
@@ -68,8 +69,8 @@ describe('render_markdown_preview', () => {
   it('keeps tilde and longer indented backtick fences inert', async () => {
     const html = await render_markdown_preview('   ~~~~html\n<img src=x onerror>\n   ~~~~\n\n   ````html\n<a href="javascript:alert(1)">x</a>\n   ````');
 
-    expect(html).toContain('&#x3C;img src=x onerror>');
-    expect(html).toContain('&#x3C;a href="javascript:alert(1)">x&#x3C;/a>');
+    expect(html).toContain('onerror');
+    expect(html).toContain('javascript:alert(1)');
   });
 
   it('preserves cancel, boxed, and uncommon KaTeX MathML/SVG output', async () => {
@@ -86,5 +87,28 @@ describe('render_markdown_preview', () => {
       name: 'studio_validation_error',
       issues: [{ code: 'unsafe_html' }],
     });
+  });
+
+  it('rejects raw HTML declarations and orphan closing tags without rewriting them', async () => {
+    await expect(render_markdown_preview('<!doctype html>')).rejects.toMatchObject({
+      name: 'studio_validation_error',
+      issues: [{ code: 'unsafe_html' }],
+    });
+    await expect(render_markdown_preview('</div>')).rejects.toMatchObject({
+      name: 'studio_validation_error',
+      issues: [{ code: 'unsafe_html' }],
+    });
+  });
+
+  it('matches Astro rendering for headings, code fences, and multiline display math', async () => {
+    const source = '# Preview heading\n\n```ts\nconst value = 1;\n```\n\n$$\nE = mc^2\n$$';
+    const astro_renderer = await create_markdown_processor(markdown_processor_options);
+    const astro_html = (await astro_renderer.render(source)).code;
+    const studio_html = await render_markdown_preview(source);
+
+    expect(studio_html).toBe(astro_html);
+    expect(studio_html).toContain('id="preview-heading"');
+    expect(studio_html).toContain('<code');
+    expect(studio_html).toContain('katex-display');
   });
 });

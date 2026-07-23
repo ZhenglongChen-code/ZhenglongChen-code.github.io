@@ -2,7 +2,8 @@ import { readFile as read_file } from 'node:fs/promises';
 import { resolve as resolve_path } from 'node:path';
 import matter from 'gray-matter';
 import { describe, expect, it } from 'vitest';
-import astro_config from '../astro.config.mjs';
+import { createMarkdownProcessor as create_markdown_processor } from '@astrojs/markdown-remark';
+import { markdown_processor_options } from '../src/lib/markdown_preview';
 import { get_public_posts } from '../src/lib/content';
 
 const math_fixture = [
@@ -25,22 +26,20 @@ describe('Markdown math rendering', () => {
       read_source('src/styles/global.css'),
       read_source('package.json'),
     ]);
-    const renderer = await astro_config.markdown?.processor?.createRenderer({});
-    const rendered_fixture = await renderer?.render(math_fixture);
+    const renderer = await create_markdown_processor(markdown_processor_options);
+    const rendered_fixture = await renderer.render(math_fixture);
     const dependencies = JSON.parse(package_json) as { dependencies: Record<string, string> };
 
-    expect(astro_config_source).toContain("import { unified as unified_processor } from '@astrojs/markdown-remark';");
     expect(astro_config_source).toContain("import { markdown_processor_options } from './src/lib/markdown_preview';");
-    expect(astro_config_source).toContain('processor: unified_processor({');
-    expect(astro_config_source).toContain('...markdown_processor_options');
+    expect(astro_config_source).toContain('markdown: markdown_processor_options');
     expect(article_layout).toContain("import 'katex/dist/katex.min.css';");
     expect(global_css).not.toContain("katex/dist/katex.min.css");
     expect(dependencies.dependencies.katex).toBe('0.16.47');
     expect(math_fixture).toContain('$p(y \\mid x, I)$');
     expect(math_fixture).toMatch(/\$\$[\s\S]*?\$\$/);
-    expect(rendered_fixture?.code).toContain('class="katex"');
-    expect(rendered_fixture?.code).toContain('<math');
-    expect(rendered_fixture?.code).not.toContain('$$');
+    expect(rendered_fixture.code).toContain('class="katex"');
+    expect(rendered_fixture.code).toContain('<math');
+    expect(rendered_fixture.code).not.toContain('$$');
   });
 
   it('keeps the diagnostic formula article out of public collections', async () => {
