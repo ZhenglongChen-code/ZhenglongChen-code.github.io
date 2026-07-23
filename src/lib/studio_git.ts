@@ -99,8 +99,8 @@ export class local_git_adapter implements git_adapter {
       if (target_stat?.isSymbolicLink()) return { ok: false, code: 'unsafe_path', message: 'Article path must not be a symbolic link.' };
       const exists = target_stat !== undefined;
       if (input.operation === 'publish_new' && exists) return { ok: false, code: 'article_exists', message: 'Article already exists.' };
-      if (input.operation === 'publish_update' && !exists) return { ok: false, code: 'article_missing', message: 'Article does not exist.' };
       if (exists && (await this.path_dirty(relative_path))) return { ok: false, code: 'target_dirty', message: 'Target article has uncommitted changes.' };
+      if (input.operation === 'publish_update' && !exists) return { ok: false, code: 'article_missing', message: 'Article does not exist.' };
       if (exists) {
         const current = await readFile(target);
         if (sha256(current) !== input.expected_source_hash) return { ok: false, code: 'stale_source', message: 'Target article changed since it was read.' };
@@ -115,7 +115,7 @@ export class local_git_adapter implements git_adapter {
         try {
           await this.run_git('update-ref', `refs/heads/${this.publication_branch}`, old_head, commit_sha);
           return { ok: false, code: 'integrity_failed', message: 'Committed article integrity verification failed; the unpublished branch ref was restored.' };
-        } catch { return { ok: false, code: 'critical_recovery_failed', message: 'Committed article integrity failed and branch recovery requires manual intervention.' }; }
+        } catch { return { ok: false, code: 'critical_recovery_failed', message: 'Committed article integrity failed; do not push. Manually inspect and restore the publication branch ref.' }; }
       }
       try { await this.run_git('push', this.remote_name, this.publication_branch); return { ok: true, path: relative_path, commit_sha, push_status: 'pushed' }; }
       catch { return { ok: false, code: 'push_failed', message: 'Push failed after the local article commit was created.', commit_sha, committed_paths: [relative_path], recovery: 'Local commit was kept. Fetch the remote branch, resolve divergence, then push normally without force.' }; }
