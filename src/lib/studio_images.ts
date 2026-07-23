@@ -36,8 +36,8 @@ const public_url = (base: string, object_key: string): string => {
   const raw_path = base.replace(/^https:\/\/[^/]+/, '');
   const decoded_segments = raw_path.split('/').map(decoded_path_segment);
   if (base.trim() !== base || /[\x00-\x1f\x7f-\x9f]/.test(base) || base.includes('\\') || /%(?:2f|5c|2e)/i.test(base) || decoded_segments.some((segment) => segment === undefined || /[\x00-\x1f\x7f-\x9f]/.test(segment)) || parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.search || parsed.hash || /\/(?:\.{1,2})(?:\/|$)/.test(raw_path) || raw_path.includes('//')) invalid('Invalid public base URL.');
-  const base_path = parsed.pathname.replace(/\/$/, '');
-  return `${parsed.origin}${base_path}/${object_key.split('/').map(encodeURIComponent).join('/')}`;
+  const base_path = decoded_segments.filter((segment) => segment !== '').map((segment) => encodeURIComponent(segment!)).join('/');
+  return `${parsed.origin}${base_path ? `/${base_path}` : ''}/${object_key.split('/').map(encodeURIComponent).join('/')}`;
 };
 const valid_source_path = (source_path: string): boolean => {
   if (!source_path || /[\\\x00-\x1f\x7f\s]/.test(source_path) || /[^\x00-\x7f]/.test(source_path) || /[?#]/.test(source_path) || source_path.startsWith('/') || source_path.startsWith('//') || /^[a-z][a-z0-9+.-]*:/i.test(source_path)) return false;
@@ -68,6 +68,7 @@ export const build_article_object_key = (input: key_input): string => {
 /** Validates and normalizes local source images without performing network I/O. */
 export const prepare_article_images = async (sources: readonly image_source[], options: image_preparation_options): Promise<{ images: prepared_image[] }> => {
   root_prefix(options.root_prefix); public_url(options.public_base_url, 'test');
+  if (!Number.isInteger(options.year) || options.year < 2000 || options.year > 9999 || !component_pattern.test(options.slug)) invalid('Invalid image manifest key components.');
   if (!Number.isSafeInteger(options.max_bytes) || options.max_bytes < 1 || !Number.isSafeInteger(options.max_pixels) || options.max_pixels < 1 || !Number.isSafeInteger(options.max_width) || options.max_width < 1 || !Number.isSafeInteger(options.max_height) || options.max_height < 1) invalid('Invalid image limits.');
   const max_images = options.max_images ?? 20; const max_total_input_bytes = options.max_total_input_bytes ?? options.max_bytes * max_images; const max_total_output_bytes = options.max_total_output_bytes ?? options.max_bytes * max_images;
   if (!Number.isSafeInteger(max_images) || max_images < 1 || !Number.isSafeInteger(max_total_input_bytes) || max_total_input_bytes < 1 || !Number.isSafeInteger(max_total_output_bytes) || max_total_output_bytes < 1 || sources.length > max_images) invalid('Invalid image manifest limits.');
@@ -143,12 +144,15 @@ export const rewrite_markdown_images = (markdown: string, urls: ReadonlyMap<stri
 /** Uploads only absent objects, allowing exact-digest idempotent reuse. */
 export const publish_prepared_images = async (images: readonly prepared_image[], adapter: cos_adapter): Promise<publish_result> => {
   const objects: published_image[] = [];
+  const snapshots = images.map((image) => {
+    const bytes = new Uint8Array(image.bytes); const digest = sha256(bytes);
+    if (digest !== image.sha256) throw new studio_image_publish_error('untracked_create', objects, `Prepared image bytes changed: ${image.object_key}`);
+    return { bytes, content_type: image.content_type, object_key: image.object_key, public_url: image.public_url, sha256: image.sha256, source_path: image.source_path } satisfies prepared_image;
+  });
   try {
     await adapter.verify_versioning();
-    for (const image of images) {
-    const owned_bytes = new Uint8Array(image.bytes); const owned_digest = sha256(owned_bytes);
-    if (owned_digest !== image.sha256) throw new studio_image_publish_error('untracked_create', objects, `Prepared image bytes changed: ${image.object_key}`);
-    const owned_image = { ...image, bytes: owned_bytes };
+    for (const image of snapshots) {
+    const owned_image = { ...image, bytes: new Uint8Array(image.bytes) };
     const existing = await adapter.inspect_object(image.object_key);
     if (existing && existing.sha256 !== image.sha256) throw new studio_image_publish_error('collision', objects, `Object collision: ${image.object_key}`);
     if (existing) { objects.push({ ...owned_image, status: 'reused' }); continue; }

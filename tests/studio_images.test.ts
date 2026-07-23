@@ -1,4 +1,6 @@
 import sharp from 'sharp';
+import remark_parse from 'remark-parse';
+import { unified as unified_processor } from 'unified';
 import { describe, expect, it } from 'vitest';
 import {
   build_article_object_key,
@@ -237,5 +239,28 @@ describe('studio_images', () => {
       delete_object: async () => {},
     };
     await expect(publish_prepared_images(images, adapter)).rejects.toMatchObject({ name: 'studio_image_publish_error', successful_objects: [expect.objectContaining({ status: 'created', version_id: 'version-a' })], cause_error: expect.objectContaining({ message: 'network down' }) });
+  });
+
+  it('encodes public-base path delimiters before Markdown rewrite', () => {
+    const rewritten = rewrite_markdown_images('![x](x.png)', new Map([['x.png', 'https://cdn.example.com/a%29b/latent-field/articles/2026/vlm-evaluation/fig-01-x.webp']]));
+    const tree = unified_processor().use(remark_parse).parse(rewritten) as { children: Array<{ children?: Array<{ url?: string }> }> };
+    expect(rewritten).toBe('![x](https://cdn.example.com/a%29b/latent-field/articles/2026/vlm-evaluation/fig-01-x.webp)');
+    expect(tree.children[0]!.children![0]!.url).toBe('https://cdn.example.com/a%29b/latent-field/articles/2026/vlm-evaluation/fig-01-x.webp');
+  });
+
+  it('rejects invalid manifest keys before source processing', async () => {
+    await expect(prepare_article_images([], { root_prefix: 'latent-field', public_base_url: 'https://cdn.example.com', year: 1, slug: '../bad', max_bytes: 1_000, max_pixels: 1_000, max_width: 10, max_height: 10 })).rejects.toMatchObject({ code: 'validation' });
+  });
+
+  it('uses a snapshot when caller mutates an image while inspection is pending', async () => {
+    const image = (await prepare_article_images([{ source_path: 'x.png', bytes: await png_bytes(), claimed_content_type: 'image/png', intent: 'diagram', semantic_name: 'map' }], { root_prefix: 'latent-field', public_base_url: 'https://cdn.example.com', year: 2026, slug: 'vlm-evaluation', max_bytes: 1_000_000, max_pixels: 1_000_000, max_width: 100, max_height: 100 })).images[0]!;
+    let release_inspect: (() => void) | undefined;
+    const inspected = new Promise<void>((resolve) => { release_inspect = resolve; });
+    const uploaded: string[] = [];
+    const adapter: cos_adapter = { verify_versioning: async () => {}, inspect_object: async () => { await inspected; return undefined; }, upload_object: async (input) => { uploaded.push(input.object_key); return { version_id: 'v' }; }, delete_object: async () => {} };
+    const publishing = publish_prepared_images([image], adapter);
+    image.object_key = 'mutated'; image.sha256 = '0'.repeat(64); image.bytes[0] = 0; release_inspect!();
+    await expect(publishing).resolves.toMatchObject({ objects: [expect.objectContaining({ object_key: 'latent-field/articles/2026/vlm-evaluation/fig-01-map.png' })] });
+    expect(uploaded).toEqual(['latent-field/articles/2026/vlm-evaluation/fig-01-map.png']);
   });
 });
