@@ -5,7 +5,7 @@ import { existsSync, realpathSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
-import { discover_local_images, parse_studio_article } from '../src/lib/studio_article';
+import { discover_local_images, parse_studio_article, serialize_studio_article, type studio_article_metadata } from '../src/lib/studio_article';
 import { render_markdown_preview } from '../src/lib/markdown_preview';
 import { tencent_cos_adapter } from '../src/lib/studio_images';
 import { local_git_adapter } from '../src/lib/studio_git';
@@ -36,7 +36,7 @@ export type studio_configuration = {
 };
 
 type preview_response = { preview_html: string; metadata: ReturnType<typeof parse_studio_article>['metadata']; unresolved_images: string[]; publish_configured: boolean };
-type preview_service = (input: { markdown: string; slug: string }) => Promise<Omit<preview_response, 'publish_configured'>>;
+type preview_service = (input: { markdown: string; slug: string; metadata?: unknown }) => Promise<Omit<preview_response, 'publish_configured'>>;
 type publish_service = (input: unknown) => Promise<studio_response>;
 type public_config = Pick<studio_configuration, 'repository_root' | 'publication_branch'>;
 
@@ -112,10 +112,13 @@ const configured_publish_service = (configuration: studio_configuration): publis
 };
 
 /** Renders a Studio preview through the shared Markdown renderer without trusting client HTML. */
-const default_preview_service: preview_service = async ({ markdown, slug }) => {
+const default_preview_service: preview_service = async ({ markdown, slug, metadata }) => {
   const article = parse_studio_article(markdown, slug);
-  const preview_html = await render_markdown_preview(article.body);
-  return { preview_html, metadata: article.metadata, unresolved_images: discover_local_images(article.body) };
+  const requested_metadata = is_record(metadata) ? metadata : {};
+  const merged_metadata = { ...article.metadata, ...requested_metadata, slug } as studio_article_metadata;
+  const validated_article = parse_studio_article(serialize_studio_article({ body: article.body, metadata: merged_metadata }), slug);
+  const preview_html = await render_markdown_preview(validated_article.body);
+  return { preview_html, metadata: validated_article.metadata, unresolved_images: discover_local_images(validated_article.body) };
 };
 
 /** Writes a JSON response with private-safe generic error messages. */
@@ -163,9 +166,23 @@ const read_json_body = async (request: IncomingMessage, max_bytes: number): Prom
 };
 
 /** Validates one exact incoming Host or Origin header instead of trusting DNS aliases. */
-const exact_header = (request: IncomingMessage, name: 'host' | 'origin', expected: string): boolean => {
+const exact_header = (request: IncomingMessage, name: string, expected: string): boolean => {
   const values = request.rawHeaders.flatMap((value, index) => index % 2 === 0 && value.toLowerCase() === name ? [request.rawHeaders[index + 1] ?? ''] : []);
   return values.length === 1 && values[0] === expected;
+};
+
+/** Lets same-origin browser GET requests omit Origin only with Fetch Metadata and a local Referer. */
+const is_browser_same_origin_request = (request: IncomingMessage, origin: string): boolean => {
+  const origin_values = request.rawHeaders.flatMap((value, index) => index % 2 === 0 && value.toLowerCase() === 'origin' ? [request.rawHeaders[index + 1] ?? ''] : []);
+  if (origin_values.length !== 0 || !exact_header(request, 'sec-fetch-site', 'same-origin')) return false;
+  const referer_values = request.rawHeaders.flatMap((value, index) => index % 2 === 0 && value.toLowerCase() === 'referer' ? [request.rawHeaders[index + 1] ?? ''] : []);
+  if (referer_values.length !== 1) return false;
+  try {
+    const referer = new URL(referer_values[0]!);
+    return referer.origin === origin && referer.pathname.startsWith('/');
+  } catch {
+    return false;
+  }
 };
 
 /** Performs constant-time comparison after rejecting non-token-shaped input. */
@@ -187,7 +204,10 @@ const static_asset = async (studio_dist: string, pathname: string): Promise<{ by
   if (!decoded.startsWith('/') || decoded.includes('\\') || decoded.includes('\0')) return undefined;
   const segments = decoded === '/' ? ['index.html'] : decoded.slice(1).split('/');
   if (!segments.length || segments.some((segment) => !segment || segment === '.' || segment === '..')) return undefined;
-  const root = await realpath(studio_dist).catch(() => undefined);
+  const expected_root = resolve(studio_dist);
+  const root_entry = await lstat(expected_root).catch(() => undefined);
+  if (!root_entry?.isDirectory() || root_entry.isSymbolicLink()) return undefined;
+  const root = await realpath(expected_root).catch(() => undefined);
   if (!root) return undefined;
   const target = resolve(root, ...segments);
   const target_relative = relative(root, target);
@@ -207,6 +227,9 @@ const static_asset = async (studio_dist: string, pathname: string): Promise<{ by
   return { bytes, content_type };
 };
 
+/** Detects an oversized base64 image from its encoded length before any binary decode allocates memory. */
+const has_oversized_encoded_image = (input: unknown, image_max_bytes: number): boolean => is_record(input) && Array.isArray(input.images) && input.images.some((image) => is_record(image) && typeof image.bytes_base64 === 'string' && Math.floor(image.bytes_base64.length / 4) * 3 > image_max_bytes);
+
 /** Creates the explicit-route, loopback-only local Studio server for CLI use and isolated tests. */
 export const create_studio_server = (options: studio_server_options = {}): studio_server => {
   if ((options.host ?? loopback_host) !== loopback_host) throw new Error('Studio must bind to 127.0.0.1.');
@@ -225,23 +248,24 @@ export const create_studio_server = (options: studio_server_options = {}): studi
     const origin = port === undefined ? '' : `http://${host}`;
     const same_host = exact_header(request, 'host', host);
     const same_origin = exact_header(request, 'origin', origin);
+    const trusted_origin = same_origin || is_browser_same_origin_request(request, origin);
     const pathname = new URL(request.url ?? '/', origin || 'http://invalid').pathname;
     if (!same_host) {
       send_json(response, 403, { error: 'Forbidden.' });
       return;
     }
     if (pathname === '/api/session' && request.method === 'GET') {
-      if (!same_origin) send_json(response, 403, { error: 'Forbidden.' });
+      if (!trusted_origin) send_json(response, 403, { error: 'Forbidden.' });
       else send_json(response, 200, { token: session_token });
       return;
     }
     if (pathname === '/api/config' && request.method === 'GET') {
-      if (!same_origin) send_json(response, 403, { error: 'Forbidden.' });
+      if (!trusted_origin) send_json(response, 403, { error: 'Forbidden.' });
       else send_json(response, 200, { preview_only: publish === undefined });
       return;
     }
     if (pathname === '/api/preview' && request.method === 'POST') {
-      if (!same_origin) {
+      if (!trusted_origin) {
         send_json(response, 403, { error: 'Forbidden.' });
         return;
       }
@@ -249,7 +273,7 @@ export const create_studio_server = (options: studio_server_options = {}): studi
         const input = await read_json_body(request, request_max_bytes);
         if (!is_record(input) || typeof input.markdown !== 'string' || input.markdown.length > 1_000_000) throw new Error('invalid_preview');
         const requested_slug = typeof input.slug === 'string' ? input.slug : is_record(input.metadata) && typeof input.metadata.slug === 'string' ? input.metadata.slug : '';
-        const result = await preview({ markdown: input.markdown, slug: requested_slug || 'preview' });
+        const result = await preview({ markdown: input.markdown, slug: requested_slug || 'preview', metadata: input.metadata });
         send_json(response, 200, { ...result, metadata: { ...result.metadata, slug: requested_slug }, publish_configured: publish !== undefined });
       } catch (cause: unknown) {
         send_json(response, cause instanceof Error && cause.message === 'body_too_large' ? 413 : 422, { error: 'Preview is invalid.' });
@@ -258,7 +282,7 @@ export const create_studio_server = (options: studio_server_options = {}): studi
     }
     if (pathname === '/api/publish' && request.method === 'POST') {
       const supplied_token = Array.isArray(request.headers['x-studio-token']) ? undefined : request.headers['x-studio-token'];
-      if (!same_origin || !valid_token(supplied_token, session_token)) {
+      if (!trusted_origin || !valid_token(supplied_token, session_token)) {
         send_json(response, 403, { error: 'Forbidden.' });
         return;
       }
@@ -268,6 +292,10 @@ export const create_studio_server = (options: studio_server_options = {}): studi
       }
       try {
         const input = await read_json_body(request, request_max_bytes);
+        if (has_oversized_encoded_image(input, image_max_bytes)) {
+          send_json(response, 413, { error: 'Request exceeds local limits.' });
+          return;
+        }
         const publication_request: studio_request = validate_studio_request(input);
         if ((publication_request.images ?? []).some((image) => image.bytes.byteLength > image_max_bytes)) {
           send_json(response, 413, { error: 'Request exceeds local limits.' });

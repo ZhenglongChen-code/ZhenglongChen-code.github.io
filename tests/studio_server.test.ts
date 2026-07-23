@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
@@ -24,7 +24,7 @@ const instances: server_instance[] = [];
 const roots: string[] = [];
 
 /** Starts the loopback-only server on a unique test port with minimal built assets. */
-const start_server = async (options: Parameters<typeof create_studio_server>[0] = {}): Promise<{ instance: server_instance; base_url: string }> => {
+const start_server = async (options: Parameters<typeof create_studio_server>[0] = {}): Promise<{ instance: server_instance; base_url: string; dist: string }> => {
   const root = await mkdtemp(join(tmpdir(), 'studio-server-'));
   roots.push(root);
   const dist = join(root, 'studio-dist');
@@ -41,7 +41,7 @@ const start_server = async (options: Parameters<typeof create_studio_server>[0] 
     });
   });
   const address = instance.server.address() as AddressInfo;
-  return { instance, base_url: `http://127.0.0.1:${address.port}` };
+  return { instance, base_url: `http://127.0.0.1:${address.port}`, dist };
 };
 
 /** Sends a same-origin request while preserving the explicit local security boundary. */
@@ -78,6 +78,14 @@ describe('local Markdown Studio server', () => {
     await expect(fetch(`${base_url}/api/session`, { headers: { Host: base_url.replace('http://', ''), Origin: 'http://localhost:4317' } })).resolves.toMatchObject({ status: 403 });
   });
 
+  it('accepts a browser-style same-origin session request without Origin', async () => {
+    const { base_url } = await start_server();
+    const host = base_url.replace('http://', '');
+
+    await expect(raw_status(base_url, '/api/session', { Host: host, 'Sec-Fetch-Site': 'same-origin', Referer: `${base_url}/` })).resolves.toBe(200);
+    await expect(raw_status(base_url, '/api/session', { Host: host, 'Sec-Fetch-Site': 'cross-site', Referer: `${base_url}/` })).resolves.toBe(403);
+  });
+
   it('rejects foreign origins and missing mutation tokens', async () => {
     const { base_url, instance } = await start_server();
 
@@ -108,6 +116,16 @@ describe('local Markdown Studio server', () => {
     const response = await request(base_url, '/api/preview', { method: 'POST', body: JSON.stringify({ markdown: valid_markdown, metadata: { slug: '' } }), headers: { 'Content-Type': 'application/json' } });
     expect(response.status).toBe(200);
     expect((await response.json() as { metadata: { slug: string } }).metadata.slug).toBe('');
+  });
+
+  it('merges valid UI metadata into preview responses without rolling edits back', async () => {
+    const { base_url } = await start_server();
+    const response = await request(base_url, '/api/preview', { method: 'POST', body: JSON.stringify({
+      markdown: valid_markdown,
+      metadata: { title: 'Edited title', description: 'Edited description', date: '2026-07-24', tags: ['studio', 'latex'], language: 'en', featured: true, draft: false, slug: 'formula', assets: [], social: { zhihu: true, wechat: false, xiaohongshu: true } },
+    }), headers: { 'Content-Type': 'application/json' } });
+    expect(response.status).toBe(200);
+    expect((await response.json() as { metadata: { title: string; date: string; tags: string[] } }).metadata).toMatchObject({ title: 'Edited title', date: '2026-07-24', tags: ['studio', 'latex'] });
   });
 
   it('delegates authenticated publication requests to the injected service', async () => {
@@ -146,6 +164,13 @@ describe('local Markdown Studio server', () => {
     expect(await response.json()).toEqual({ preview_only: true });
   });
 
+  it('rejects oversized base64 image input before protocol image decoding', async () => {
+    const { base_url, instance } = await start_server({ request_max_bytes: 29_000_000, image_max_bytes: 20_000_000, publish: async () => ({ protocol_version: 1, kind: 'failed', errors: [] }) });
+    const bytes_base64 = Buffer.alloc(20_000_001).toString('base64');
+    const response = await request(base_url, '/api/publish', { method: 'POST', body: JSON.stringify({ ...valid_publish_request, images: [{ source_path: 'figure.png', bytes_base64, claimed_content_type: 'image/png', intent: 'diagram', semantic_name: 'figure' }] }), headers: { 'Content-Type': 'application/json', 'x-studio-token': instance.session_token } });
+    expect(response.status).toBe(413);
+  });
+
   it('rejects a DNS-rebinding Host header even with a local URL target', async () => {
     const { base_url } = await start_server();
 
@@ -159,5 +184,13 @@ describe('local Markdown Studio server', () => {
     expect(response.status).toBe(200);
     expect(response.headers.get('cache-control')).toBe('no-store');
     await expect(request(base_url, '/../../package.json')).resolves.toMatchObject({ status: 404 });
+  });
+
+  it('rejects a Studio dist root supplied through a symbolic link', async () => {
+    const { dist } = await start_server();
+    const link = `${dist}-link`;
+    await symlink(dist, link);
+    const linked = await start_server({ studio_dist: link });
+    await expect(request(linked.base_url, '/')).resolves.toMatchObject({ status: 404 });
   });
 });

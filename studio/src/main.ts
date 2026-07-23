@@ -18,6 +18,7 @@ type article_metadata = {
 type studio_asset = { source_path: string; object_key: string; public_url: string };
 type preview_request = { markdown: string; metadata: article_metadata };
 type preview_response = { preview_html: string; metadata: Partial<article_metadata>; unresolved_images: string[]; publish_configured?: boolean };
+type publish_result = { kind: 'published'; public_url: string; commit_sha: string } | { kind: 'committed_local'; commit_sha: string; recovery: string } | { kind: 'failed'; errors: { code: string; message: string }[] } | { kind: 'recovery_required'; errors: { code: string; message: string }[] };
 type studio_draft = { markdown: string; metadata: article_metadata; image_urls: Record<string, string> };
 type storage_adapter = { getItem: (key: string) => string | null; setItem: (key: string, value: string) => void; removeItem: (key: string) => void };
 
@@ -89,6 +90,9 @@ let publish_is_configured = false;
 let preview_controller: AbortController | undefined;
 let preview_sequence = 0;
 let import_sequence = 0;
+let session_token: string | undefined;
+let expected_source_hash: string | undefined;
+let publish_in_flight = false;
 
 const get_storage = (): storage_adapter | undefined => { try { return window.localStorage; } catch { return undefined; } };
 
@@ -160,6 +164,7 @@ const reset_document_state = (): void => {
   image_files.clear();
   image_urls = {};
   unresolved_sources = [];
+  expected_source_hash = undefined;
   write_metadata({});
   render_images([]);
   preview_container.replaceChildren();
@@ -204,10 +209,31 @@ const render_images = (images: string[]): void => {
 };
 
 const update_publish_state = (configured: boolean): void => {
-  publish_is_configured = configured;
-  publish_new.disabled = !configured;
-  publish_update.disabled = !configured;
-  publish_configuration.textContent = configured ? 'Publishing configuration detected.' : 'Preview only — publishing is not configured.';
+  publish_is_configured = configured && session_token !== undefined;
+  publish_new.disabled = !publish_is_configured || publish_in_flight;
+  publish_update.disabled = !publish_is_configured || !expected_source_hash || publish_in_flight;
+  publish_configuration.textContent = !publish_is_configured ? 'Preview only — publishing is not configured.' : expected_source_hash ? 'Publishing configuration detected.' : 'Publishing configuration detected. Import an article file before updating an existing article.';
+};
+
+/** Computes the original imported article revision required for safe update publication. */
+const source_hash = async (source: string): Promise<string | undefined> => {
+  if (!globalThis.crypto?.subtle) return undefined;
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(source));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+};
+
+/** Encodes one paired local image for the bounded JSON Studio protocol. */
+const image_base64 = async (file: File): Promise<string> => {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let binary = '';
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, Math.min(offset + 0x8000, bytes.length)));
+  return btoa(binary);
+};
+
+/** Returns a protocol-safe semantic image name from its paired Markdown source. */
+const semantic_image_name = (source_path: string): string => {
+  const normalized = source_path.replace(/^.*\//, '').replace(/\.[^.]+$/, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  return normalized || 'image';
 };
 
 const request_preview = async (): Promise<void> => {
@@ -253,6 +279,7 @@ const import_file = async (file: File | undefined): Promise<void> => {
   if (!is_current_import(import_sequence, file_sequence)) return;
   reset_document_state();
   source_input.value = markdown;
+  expected_source_hash = await source_hash(markdown);
   import_feedback.textContent = `Imported ${file.name}.`;
   import_feedback.focus();
   source_input.focus();
@@ -276,7 +303,49 @@ const sync_workspace_mode = (): void => {
   select_tab(editor_tab.getAttribute('aria-selected') === 'false' ? 1 : 0);
 };
 
-const publish = (mode: 'new' | 'update'): void => { announce(publish_is_configured ? `${mode === 'new' ? 'New article publication' : 'Article update'} is ready for the configured publisher.` : 'Publishing is disabled until a local publisher is configured.', 'publish'); };
+/** Publishes one protocol request while retaining the in-memory session boundary. */
+const publish = async (mode: 'new' | 'update'): Promise<void> => {
+  if (!publish_is_configured || !session_token || publish_in_flight) { announce('Publishing is disabled until a local publisher is configured.', 'publish'); return; }
+  if (mode === 'update' && !expected_source_hash) { announce('Update requires an imported article revision.', 'validation'); return; }
+  const metadata = read_metadata();
+  const year = Number(metadata.date.slice(0, 4));
+  if (!Number.isInteger(year)) { announce('Enter a valid publication date before publishing.', 'validation'); return; }
+  if (unresolved_sources.some((source_path) => !image_files.has(source_path))) { announce('Pair every referenced local image before publishing.', 'validation'); return; }
+  publish_in_flight = true;
+  update_publish_state(publish_is_configured);
+  try {
+    const images = await Promise.all([...image_files.entries()].map(async ([source_path, file]) => ({ source_path, bytes_base64: await image_base64(file), claimed_content_type: file.type === 'image/jpeg' ? 'image/jpeg' as const : 'image/png' as const, intent: 'diagram' as const, semantic_name: semantic_image_name(source_path) })));
+    const { slug, assets: _assets, ...protocol_metadata } = metadata;
+    const request = { protocol_version: 1 as const, kind: mode === 'new' ? 'publish_new' as const : 'publish_update' as const, request_id: crypto.randomUUID().toLowerCase(), slug, year, markdown: source_input.value, metadata: protocol_metadata, ...(images.length ? { images } : {}), commit_message: `content: publish ${slug}`, ...(mode === 'update' ? { expected_source_hash } : {}) };
+    const response = await fetch('/api/publish', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-studio-token': session_token }, body: JSON.stringify(request) });
+    const result = await response.json() as publish_result;
+    if (result.kind === 'failed' || result.kind === 'recovery_required') throw new Error(result.errors.map((error) => error.message).join(' '));
+    if (!response.ok) throw new Error('Publication failed.');
+    if (result.kind === 'published') announce(`Published ${result.commit_sha}. ${result.public_url}`, 'publish');
+    else announce(`Committed locally: ${result.commit_sha}. ${result.recovery}`, 'publish');
+  } catch {
+    announce('Publication could not be completed. Your draft remains local.', 'publish');
+  } finally {
+    publish_in_flight = false;
+    update_publish_state(publish_is_configured);
+  }
+};
+
+/** Gets the local session and publication mode without persisting the bearer token. */
+const initialize_local_api = async (): Promise<void> => {
+  try {
+    const [session_response, config_response] = await Promise.all([fetch('/api/session'), fetch('/api/config')]);
+    if (!session_response.ok || !config_response.ok) throw new Error('Local session unavailable.');
+    const session = await session_response.json() as { token?: unknown };
+    const config = await config_response.json() as { preview_only?: unknown };
+    if (typeof session.token !== 'string' || !/^[a-f0-9]{64}$/.test(session.token)) throw new Error('Local session unavailable.');
+    session_token = session.token;
+    update_publish_state(config.preview_only !== true);
+  } catch {
+    session_token = undefined;
+    update_publish_state(false);
+  }
+};
 
 file_input.addEventListener('change', () => { void import_file(file_input.files?.[0]); });
 source_input.addEventListener('input', schedule_preview);
@@ -289,11 +358,12 @@ unresolved_images.addEventListener('drop', (event) => { event.preventDefault(); 
 editor_tab.addEventListener('click', () => select_tab(0));
 preview_tab.addEventListener('click', () => select_tab(1));
 [editor_tab, preview_tab].forEach((tab, current_index) => tab.addEventListener('keydown', (event) => { const selected_index = next_tab_index(current_index, event.key, 2); if (selected_index !== current_index) { event.preventDefault(); select_tab(selected_index, true); } }));
-publish_new.addEventListener('click', () => publish('new'));
-publish_update.addEventListener('click', () => publish('update'));
+publish_new.addEventListener('click', () => { void publish('new'); });
+publish_update.addEventListener('click', () => { void publish('update'); });
 window.addEventListener('resize', sync_workspace_mode);
 restore_draft();
 update_publish_state(false);
+void initialize_local_api();
 sync_workspace_mode();
 if (source_input.value) schedule_preview();
 };

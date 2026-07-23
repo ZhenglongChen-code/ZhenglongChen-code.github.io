@@ -75,6 +75,22 @@ describe('local markdown studio UI contract', () => {
     expect(existsSync(resolve(process.cwd(), 'src/pages/studio/index.astro'))).toBe(false);
   });
 
+  test('keeps the session token in memory and wires protocol publication requests', () => {
+    const main = read_source('studio/src/main.ts');
+
+    expect(main).toContain("fetch('/api/session'");
+    expect(main).toContain("fetch('/api/config'");
+    expect(main).toContain('crypto.randomUUID().toLowerCase()');
+    expect(main).toContain("'x-studio-token': session_token");
+    expect(main).toContain("fetch('/api/publish'");
+    expect(main).toContain('bytes_base64');
+    expect(main).toContain('expected_source_hash');
+    expect(main).toContain('publish_update.disabled = !publish_is_configured || !expected_source_hash || publish_in_flight');
+    const draft_type = main.slice(main.indexOf('type studio_draft'), main.indexOf('type storage_adapter'));
+    expect(draft_type).not.toContain('session_token');
+    expect(main).not.toContain("safe_storage_set(get_storage(), 'session_token'");
+  });
+
   test('invalidates an in-flight preview before the next debounce window', () => {
     const main = read_source('studio/src/main.ts');
     const schedule_start = main.indexOf('const schedule_preview');
