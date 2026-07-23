@@ -226,6 +226,16 @@ describe('studio_images', () => {
     expect(calls).toEqual(expect.arrayContaining([expect.objectContaining({ Headers: { 'If-None-Match': '*' } }), expect.objectContaining({ VersionId: 'version-1' })]));
   });
 
+  it('writes and reads Studio request metadata with digest and exact version identity', async () => {
+    const image = (await prepare_article_images([{ source_path: 'x.png', bytes: await png_bytes(), claimed_content_type: 'image/png', intent: 'diagram', semantic_name: 'map' }], { root_prefix: 'latent-field', public_base_url: 'https://cdn.example.com', year: 2026, slug: 'vlm-evaluation', max_bytes: 1_000_000, max_pixels: 1_000_000, max_width: 100, max_height: 100 })).images[0]!;
+    const calls: unknown[] = []; const request_id = 'a'.repeat(32);
+    const client = { getBucketVersioning: async () => ({ VersioningConfiguration: { Status: 'Enabled' as const } }), headObject: async () => ({ headers: { 'x-cos-meta-sha256': image.sha256, 'x-cos-version-id': 'remote-v1', 'x-cos-meta-studio-request-id': request_id } }), putObject: async (input: unknown) => { calls.push(input); return { VersionId: 'created-v1' }; }, deleteObject: async () => ({}) };
+    const adapter = new tencent_cos_adapter({ secret_id: 'id', secret_key: 'key', region: 'ap-shanghai', bucket: 'bucket-1234567890', root_prefix: 'latent-field', public_base_url: 'https://cdn.example.com' }, () => client);
+    await expect(adapter.inspect_object(image.object_key)).resolves.toEqual({ sha256: image.sha256, version_id: 'remote-v1', studio_request_id: request_id });
+    await expect(adapter.upload_object(image, request_id)).resolves.toEqual({ version_id: 'created-v1' });
+    expect(calls).toEqual([expect.objectContaining({ Headers: expect.objectContaining({ 'If-None-Match': '*', 'x-cos-meta-studio-request-id': request_id }), 'x-cos-meta-sha256': image.sha256 })]);
+  });
+
   it('preserves the version-owned success ledger when a later upload has a network failure', async () => {
     const images = (await prepare_article_images([
       { source_path: 'a.png', bytes: await png_bytes(), claimed_content_type: 'image/png', intent: 'diagram', semantic_name: 'a' },

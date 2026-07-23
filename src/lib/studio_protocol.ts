@@ -6,7 +6,7 @@ export type normalized_studio_image = Omit<studio_image_input, 'bytes_base64'> &
 export type studio_metadata_input = { title: string; description: string; date: string; updated?: string; tags?: string[]; language?: 'zh' | 'en'; translation?: string; featured?: boolean; draft?: boolean; social?: { zhihu: boolean; wechat: boolean; xiaohongshu: boolean } };
 type base = { protocol_version: 1; request_id: string; slug: string; year: number; markdown: string; metadata: studio_metadata_input; images?: normalized_studio_image[] };
 export type studio_preview_request = base & { kind: 'preview' }; export type studio_publish_new_request = base & { kind: 'publish_new'; commit_message: string }; export type studio_publish_update_request = base & { kind: 'publish_update'; commit_message: string; expected_source_hash: string }; export type studio_request = studio_preview_request | studio_publish_new_request | studio_publish_update_request;
-export type studio_response = { protocol_version: 1; kind: 'preview'; publishable: boolean; errors: studio_error[] } | { protocol_version: 1; kind: 'published'; public_url: string; commit_sha: string; deployment_advisory?: string } | { protocol_version: 1; kind: 'committed_local'; commit_sha: string; recovery: string } | { protocol_version: 1; kind: 'failed'; errors: studio_error[]; cleanup?: { deleted: string[]; failures: string[] } } | { protocol_version: 1; kind: 'recovery_required'; errors: studio_error[] };
+export type studio_response = { protocol_version: 1; kind: 'preview'; publishable: boolean; errors: studio_error[] } | { protocol_version: 1; kind: 'published'; public_url: string; commit_sha: string; deployment_advisory?: string } | { protocol_version: 1; kind: 'committed_local'; commit_sha: string; recovery: string } | { protocol_version: 1; kind: 'failed'; errors: studio_error[]; cleanup?: { deleted: string[]; failures: string[] } } | { protocol_version: 1; kind: 'recovery_required'; errors: studio_error[] } | { protocol_version: 1; kind: 'recovered_stale_claim'; errors: [] };
 export class studio_protocol_error extends Error { constructor(readonly errors: studio_error[]) { super(errors.map((item) => item.message).join('; ')); } }
 const request_id_pattern = /^(?:[a-f0-9]{32}|[a-f0-9]{64}|[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12})$/; const slug_pattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const is_record = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -14,6 +14,24 @@ const text = (value: unknown, field: string, errors: studio_error[], max = 200_0
 const unknowns = (value: Record<string, unknown>, allowed: readonly string[], errors: studio_error[]): void => { for (const key of Object.keys(value)) if (!allowed.includes(key)) errors.push({ code: 'invalid_field', field: key, message: `Unknown field: ${key}.` }); };
 const date = (value: unknown, field: string, errors: studio_error[]): string | undefined => { const result = text(value, field, errors, 10); if (result && !/^\d{4}-\d{2}-\d{2}$/.test(result)) errors.push({ code: 'invalid_metadata', field, message: `${field} must be YYYY-MM-DD.` }); return result; };
 const decode = (value: string): Uint8Array | undefined => { if (!/^[A-Za-z0-9+/]*={0,2}$/.test(value) || value.length % 4 !== 0) return undefined; const bytes = Buffer.from(value, 'base64'); return Buffer.from(bytes).toString('base64') === value ? new Uint8Array(bytes) : undefined; };
+
+/** Returns whether a JSON-safe value is one complete Studio error item. */
+const is_studio_error = (value: unknown): value is studio_error => is_record(value) && Object.keys(value).every((key) => ['code', 'field', 'message'].includes(key)) && typeof value.code === 'string' && value.code.length > 0 && value.code.length <= 200 && typeof value.message === 'string' && value.message.length > 0 && value.message.length <= 2_000 && (value.field === undefined || (typeof value.field === 'string' && value.field.length > 0 && value.field.length <= 200));
+
+/** Returns whether a value is an exact cleanup report safe to replay from a journal. */
+const is_cleanup = (value: unknown): value is { deleted: string[]; failures: string[] } => is_record(value) && Object.keys(value).every((key) => ['deleted', 'failures'].includes(key)) && Array.isArray(value.deleted) && Array.isArray(value.failures) && value.deleted.every((item) => typeof item === 'string' && item.length > 0) && value.failures.every((item) => typeof item === 'string' && item.length > 0);
+
+/** Validates every persisted response variant before a transaction journal can replay it. */
+export const is_studio_response = (value: unknown): value is studio_response => {
+  if (!is_record(value) || value.protocol_version !== 1 || typeof value.kind !== 'string') return false;
+  const has_only = (keys: readonly string[]): boolean => Object.keys(value).every((key) => keys.includes(key));
+  if (value.kind === 'preview') return has_only(['protocol_version', 'kind', 'publishable', 'errors']) && typeof value.publishable === 'boolean' && Array.isArray(value.errors) && value.errors.every(is_studio_error);
+  if (value.kind === 'published') return has_only(['protocol_version', 'kind', 'public_url', 'commit_sha', 'deployment_advisory']) && typeof value.public_url === 'string' && /^https:\/\//.test(value.public_url) && typeof value.commit_sha === 'string' && /^[a-f0-9]{40}$/.test(value.commit_sha) && (value.deployment_advisory === undefined || (typeof value.deployment_advisory === 'string' && value.deployment_advisory.length > 0));
+  if (value.kind === 'committed_local') return has_only(['protocol_version', 'kind', 'commit_sha', 'recovery']) && typeof value.commit_sha === 'string' && /^[a-f0-9]{40}$/.test(value.commit_sha) && typeof value.recovery === 'string' && value.recovery.length > 0;
+  if (value.kind === 'failed') return has_only(['protocol_version', 'kind', 'errors', 'cleanup']) && Array.isArray(value.errors) && value.errors.every(is_studio_error) && (value.cleanup === undefined || is_cleanup(value.cleanup));
+  if (value.kind === 'recovery_required') return has_only(['protocol_version', 'kind', 'errors']) && Array.isArray(value.errors) && value.errors.every(is_studio_error);
+  return value.kind === 'recovered_stale_claim' && has_only(['protocol_version', 'kind', 'errors']) && Array.isArray(value.errors) && value.errors.length === 0;
+};
 
 /** Validates JSON input, rejecting unsupported fields and snapshotting decoded image bytes. */
 export const validate_studio_request = (value: unknown): studio_request => {
