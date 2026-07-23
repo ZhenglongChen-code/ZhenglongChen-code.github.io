@@ -653,8 +653,9 @@ if run_site_check "$missing_fixture" "$missing_site_output"; then
 fi
 for missing_path in \
   dist/index.html \
-  dist/writing/index.html \
-  dist/work/index.html \
+  dist/research/index.html \
+  dist/projects/index.html \
+  dist/articles/index.html \
   dist/about/index.html \
   dist/rss.xml \
   dist/404.html; do
@@ -664,13 +665,15 @@ done
 valid_fixture="$test_root/valid_site"
 valid_site_output="$test_root/valid_site.out"
 mkdir -p \
-  "$valid_fixture/dist/writing" \
-  "$valid_fixture/dist/work" \
+  "$valid_fixture/dist/research" \
+  "$valid_fixture/dist/projects" \
+  "$valid_fixture/dist/articles" \
   "$valid_fixture/dist/about" \
   "$valid_fixture/social_exports/welcome"
 printf '%s\n' '<!doctype html><html lang="zh-CN"><head><link rel="canonical" href="http://106.14.173.234/"></head><body>ChenZL</body></html>' >"$valid_fixture/dist/index.html"
-printf '%s\n' '<!doctype html>' >"$valid_fixture/dist/writing/index.html"
-printf '%s\n' '<!doctype html>' >"$valid_fixture/dist/work/index.html"
+printf '%s\n' '<!doctype html>' >"$valid_fixture/dist/research/index.html"
+printf '%s\n' '<!doctype html>' >"$valid_fixture/dist/projects/index.html"
+printf '%s\n' '<!doctype html>' >"$valid_fixture/dist/articles/index.html"
 printf '%s\n' '<!doctype html>' >"$valid_fixture/dist/about/index.html"
 printf '%s\n' '<rss></rss>' >"$valid_fixture/dist/rss.xml"
 printf '%s\n' '<!doctype html>' >"$valid_fixture/dist/404.html"

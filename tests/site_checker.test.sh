@@ -28,11 +28,12 @@ assert_failure() {
 make_fixture() {
   local fixture_root="$1"
 
-  mkdir -p "$fixture_root/dist/writing" "$fixture_root/dist/work" "$fixture_root/dist/about" \
+  mkdir -p "$fixture_root/dist/research" "$fixture_root/dist/projects" "$fixture_root/dist/articles" "$fixture_root/dist/about" \
     "$fixture_root/social_exports/welcome"
   printf '<!doctype html><html lang="zh-CN"><head><link rel="canonical" href="http://106.14.173.234/"></head><body>ChenZL</body></html>\n' >"$fixture_root/dist/index.html"
-  printf '<html>ChenZL</html>\n' >"$fixture_root/dist/writing/index.html"
-  printf '<html>ChenZL</html>\n' >"$fixture_root/dist/work/index.html"
+  printf '<html>ChenZL</html>\n' >"$fixture_root/dist/research/index.html"
+  printf '<html>ChenZL</html>\n' >"$fixture_root/dist/projects/index.html"
+  printf '<html>ChenZL</html>\n' >"$fixture_root/dist/articles/index.html"
   printf '<html>ChenZL</html>\n' >"$fixture_root/dist/about/index.html"
   printf '<rss>ChenZL</rss>\n' >"$fixture_root/dist/rss.xml"
   printf '<html>ChenZL</html>\n' >"$fixture_root/dist/404.html"
@@ -53,7 +54,7 @@ assert_success 'a valid generated artifact set must pass' run_checker "$valid_fi
 
 chinese_leak_fixture="$test_root/chinese_leak"
 make_fixture "$chinese_leak_fixture"
-printf '<html>陈正龙</html>\n' >"$chinese_leak_fixture/dist/writing/leak.html"
+printf '<html>陈正龙</html>\n' >"$chinese_leak_fixture/dist/articles/leak.html"
 assert_failure 'generated HTML containing the former Chinese public name must fail' \
   run_checker "$chinese_leak_fixture"
 

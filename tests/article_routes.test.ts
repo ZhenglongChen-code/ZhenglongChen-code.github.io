@@ -39,7 +39,7 @@ describe('create_article_paths', () => {
     const paths = create_article_paths(posts, 'zh');
 
     expect(paths.map((path) => path.params.slug)).toEqual(['essay-zh', 'note']);
-    expect(paths[0]?.props.translation_url).toBe('/en/writing/essay-en');
+    expect(paths[0]?.props.translation_url).toBe('/en/articles/essay-en');
     expect(paths[1]?.props.translation_url).toBeUndefined();
     expect(paths[0]?.props).not.toHaveProperty('writing_entries');
   });

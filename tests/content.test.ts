@@ -82,8 +82,9 @@ describe('public identity source', () => {
     const public_source_files = [
       'src/pages/index.astro',
       'src/pages/about.astro',
-      'src/pages/work.astro',
-      'src/pages/writing/index.astro',
+      'src/pages/research.astro',
+      'src/pages/projects.astro',
+      'src/pages/articles/index.astro',
       'src/pages/404.astro',
       'src/pages/tags/[tag].astro',
       'src/components/site_header.astro',

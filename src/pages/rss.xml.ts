@@ -2,6 +2,7 @@ import rss from '@astrojs/rss';
 import type { APIContext } from 'astro';
 import { getCollection as get_collection } from 'astro:content';
 import { get_public_posts } from '../lib/content';
+import { article_path } from '../lib/site_routes';
 
 export async function GET(context: APIContext) {
   if (!context.site) {
@@ -20,7 +21,7 @@ export async function GET(context: APIContext) {
       title: writing_entry.data.title,
       description: writing_entry.data.description,
       pubDate: writing_entry.data.date,
-      link: new URL(`/writing/${writing_entry.id}`, context.site).href,
+      link: new URL(article_path(writing_entry.id, writing_entry.data.language), context.site).href,
     })),
   });
 }

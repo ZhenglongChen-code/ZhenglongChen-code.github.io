@@ -5,6 +5,7 @@ import {
   validate_translation_pairs,
   type dated_entry,
 } from './content';
+import { article_path as get_public_article_path } from './site_routes';
 
 export type article_language = 'zh' | 'en';
 
@@ -22,9 +23,10 @@ type article_path<T extends dated_entry> = {
 };
 
 function get_article_url<T extends dated_entry>(writing_entry: T): string {
-  return writing_entry.data.language === 'en'
-    ? `/en/writing/${writing_entry.id}`
-    : `/writing/${writing_entry.id}`;
+  return get_public_article_path(
+    writing_entry.id,
+    writing_entry.data.language === 'en' ? 'en' : 'zh',
+  );
 }
 
 export function create_article_paths<T extends dated_entry>(

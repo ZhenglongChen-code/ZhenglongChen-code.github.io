@@ -5,6 +5,7 @@ import {
   get_article_static_paths,
   type article_route_props,
 } from '../../../lib/article_routes';
+import { article_path } from '../../../lib/site_routes';
 
 type Props = article_route_props;
 
@@ -20,7 +21,7 @@ const { Content } = await render(writing_entry);
   title={writing_entry.data.title}
   description={writing_entry.data.description}
   language="en"
-  canonical_path={`/en/writing/${writing_entry.id}`}
+  canonical_path={article_path(writing_entry.id, 'en')}
   date={writing_entry.data.date}
   updated={writing_entry.data.updated}
   tags={writing_entry.data.tags}

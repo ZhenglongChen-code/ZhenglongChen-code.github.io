@@ -1,0 +1,31 @@
+---
+import { getCollection as get_collection } from 'astro:content';
+import Project_list from '../components/project_list.astro';
+import Base_layout from '../layouts/base_layout.astro';
+
+const work_entries = await get_collection('work');
+const public_research = [...work_entries]
+  .filter((work_entry) => !work_entry.data.draft && work_entry.data.kind === 'research')
+  .sort((first_entry, second_entry) => (
+    Number(second_entry.data.featured) - Number(first_entry.data.featured)
+    || second_entry.data.year - first_entry.data.year
+  ));
+---
+
+<Base_layout
+  title="Research | ChenZL"
+  description="ChenZL's public multimodal research directions and publications."
+  language="en"
+  canonical_path="/research"
+>
+  <div class="shell">
+    <header class="page_heading">
+      <p class="section_kicker">Research</p>
+      <h1>Research</h1>
+      <p>Public work on multimodal understanding, model reasoning, and evaluation.</p>
+    </header>
+    <section class="archive_section" aria-label="Public research">
+      <Project_list work_entries={public_research} />
+    </section>
+  </div>
+</Base_layout>

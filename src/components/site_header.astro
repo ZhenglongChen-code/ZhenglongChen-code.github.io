@@ -1,28 +1,20 @@
 ---
-type nav_item = {
-  label: string;
-  href: string;
-  section: 'home' | 'work' | 'writing' | 'about';
-};
+import { navigation_items, type site_section } from '../lib/site_routes';
 
 const pathname = Astro.url.pathname;
-const current_section = pathname === '/'
+const current_section: site_section | '' = pathname === '/'
   ? 'home'
-  : pathname === '/work' || pathname.startsWith('/work/')
-    ? 'work'
+  : pathname === '/research' || pathname.startsWith('/research/')
+    ? 'research'
+    : pathname === '/projects' || pathname.startsWith('/projects/')
+      ? 'projects'
     : pathname === '/about' || pathname.startsWith('/about/')
       ? 'about'
-      : pathname === '/writing' || pathname.startsWith('/writing/')
-          || pathname === '/en/writing' || pathname.startsWith('/en/writing/')
+      : pathname === '/articles' || pathname.startsWith('/articles/')
+          || pathname === '/en/articles' || pathname.startsWith('/en/articles/')
           || pathname === '/tags' || pathname.startsWith('/tags/')
-        ? 'writing'
+        ? 'articles'
         : '';
-const nav_items: nav_item[] = [
-  { label: '首页', href: '/', section: 'home' },
-  { label: '项目', href: '/work', section: 'work' },
-  { label: '文章', href: '/writing', section: 'writing' },
-  { label: '关于', href: '/about', section: 'about' },
-];
 const current_year = new Date().getFullYear();
 ---
 
@@ -31,13 +23,13 @@ const current_year = new Date().getFullYear();
   <p class="masthead_note" aria-hidden="true"><span lang="en">Field Notes</span> · {current_year}</p>
   <nav class="primary_nav" aria-label="主要导航">
     <ul>
-      {nav_items.map((nav_item) => (
+      {navigation_items.map((navigation_item) => (
         <li>
           <a
-            href={nav_item.href}
-            aria-current={current_section === nav_item.section ? 'page' : undefined}
+            href={navigation_item.href}
+            aria-current={current_section === navigation_item.section ? 'page' : undefined}
           >
-            {nav_item.label}
+            {navigation_item.label}
           </a>
         </li>
       ))}

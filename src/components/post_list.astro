@@ -1,5 +1,6 @@
 ---
 import type { CollectionEntry } from 'astro:content';
+import { article_path } from '../lib/site_routes';
 
 type Props = {
   writing_entries: CollectionEntry<'writing'>[];
@@ -13,9 +14,7 @@ const { writing_entries, start_number = 1 } = Astro.props;
   {writing_entries.map((writing_entry, index) => {
     const entry_language = writing_entry.data.language === 'zh' ? 'zh-CN' : 'en';
     const tag_label = writing_entry.data.language === 'zh' ? '文章标签' : 'Article tags';
-    const post_path = writing_entry.data.language === 'zh'
-      ? `/writing/${writing_entry.id}`
-      : `/en/writing/${writing_entry.id}`;
+    const post_path = article_path(writing_entry.id, writing_entry.data.language);
     const display_number = String(start_number + index).padStart(2, '0');
 
     return (

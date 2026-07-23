@@ -4,8 +4,9 @@ import { extname, relative, resolve } from 'node:path';
 
 const required_paths = [
   'dist/index.html',
-  'dist/writing/index.html',
-  'dist/work/index.html',
+  'dist/research/index.html',
+  'dist/projects/index.html',
+  'dist/articles/index.html',
   'dist/about/index.html',
   'dist/rss.xml',
   'dist/404.html',

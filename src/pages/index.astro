@@ -4,6 +4,7 @@ import Post_list from '../components/post_list.astro';
 import Project_list from '../components/project_list.astro';
 import Base_layout from '../layouts/base_layout.astro';
 import { get_public_posts } from '../lib/content';
+import { article_path } from '../lib/site_routes';
 
 const all_writing = await get_collection('writing');
 const public_writing = get_public_posts(all_writing);
@@ -20,10 +21,8 @@ const latest_writing = public_writing
   .filter((writing_entry) => writing_entry.id !== featured_post?.id)
   .slice(0, 3);
 const featured_path = featured_post
-  ? featured_post.data.language === 'en'
-    ? `/en/writing/${featured_post.id}`
-    : `/writing/${featured_post.id}`
-  : '/writing';
+  ? article_path(featured_post.id, featured_post.data.language)
+  : '/articles';
 const featured_language = featured_post?.data.language === 'en' ? 'en' : 'zh-CN';
 const featured_label = featured_post?.data.language === 'en' ? 'Featured essay' : '精选文章';
 const featured_link_label = featured_post?.data.language === 'en' ? 'Read the essay' : '阅读全文';
@@ -62,7 +61,7 @@ const featured_link_aria_label = featured_post
           <p class="section_kicker">01 / Selected Work</p>
           <h2 id="work_title">代表项目</h2>
         </div>
-        <a class="section_link" href="/work">查看全部</a>
+          <a class="section_link" href="/projects">查看全部</a>
       </header>
       <Project_list work_entries={selected_work} />
     </section>
@@ -73,7 +72,7 @@ const featured_link_aria_label = featured_post
           <p class="section_kicker">02 / Field Notes</p>
           <h2 id="writing_title">写作与笔记</h2>
         </div>
-        <a class="section_link" href="/writing">全部文章</a>
+        <a class="section_link" href="/articles">全部文章</a>
       </header>
 
       <div class="editorial_grid">
