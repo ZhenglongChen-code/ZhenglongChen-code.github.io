@@ -150,6 +150,35 @@ describe('export_social_articles', () => {
     expect(Object.keys(export_tree).some((path) => path.startsWith('math-disabled/'))).toBe(false);
   });
 
+  it('keeps the trusted WeChat source outside unclosed unsafe Markdown content', async () => {
+    const project_root = await create_temporary_project();
+    const frontmatter = [
+      'title: 不安全公式',
+      'description: 验证可信来源链接隔离。',
+      'tags: [数学]',
+      'language: zh',
+      'draft: false',
+    ].join('\n');
+    const markdown = [
+      '$$E = mc^2$$',
+      '',
+      '<iframe src="https://unsafe.example">unclosed unsafe content',
+      '$p(y \\mid x)$',
+    ].join('\n');
+
+    await write_article(project_root, 'unsafe-math', frontmatter, markdown);
+
+    await export_social_articles({ project_root, site_url: 'https://example.test' });
+    const export_tree = await read_export_tree(project_root);
+    const wechat_output = export_tree['unsafe-math/wechat.html'] ?? '';
+
+    expect(wechat_output).toContain('$$E = mc^2$$');
+    expect(wechat_output).not.toContain('p(y \\mid x)');
+    expect(wechat_output).toContain('https://example.test/articles/unsafe-math');
+    expect(wechat_output).not.toMatch(/<(script|style|link|iframe|object|embed)\b/i);
+    expect(wechat_output).not.toContain('unclosed unsafe content');
+  });
+
   it('rejects malformed SITE_URL input before creating an output directory', async () => {
     const project_root = await create_temporary_project();
     await write_article(project_root, 'valid', [

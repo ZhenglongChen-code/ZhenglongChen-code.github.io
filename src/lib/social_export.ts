@@ -83,6 +83,28 @@ function truncate_text(value: string, max_characters: number): string {
   return Array.from(value).slice(0, Math.max(0, max_characters)).join('');
 }
 
+/** Escapes a text value for safe interpolation into trusted static HTML. */
+function escape_html(value: string): string {
+  return value.replace(/[&<>"']/gu, (character) => {
+    const escaped_characters: Readonly<Record<string, string>> = {
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#39;',
+    };
+
+    return escaped_characters[character] ?? character;
+  });
+}
+
+/** Builds a trusted, escaped WeChat source link after untrusted Markdown is sanitized. */
+function format_wechat_source(canonical_url: string): string {
+  const escaped_url = escape_html(canonical_url);
+
+  return `<p style="${wechat_styles.p}">原文：<a href="${escaped_url}" style="${wechat_styles.a}">${escaped_url}</a></p>`;
+}
+
 /** Converts Markdown to collapsed plain text suitable for a social post. */
 function markdown_to_plain_text(markdown: string): string {
   const parsed_markdown = marked.parse(markdown, { renderer: plain_text_renderer });
@@ -144,8 +166,7 @@ export function format_wechat_html(article: social_article): string {
     throw new TypeError('Article Markdown must be a string.');
   }
 
-  const markdown_with_source = `${article.markdown}\n\n原文：${article.canonical_url}`;
-  const parsed_markdown = marked.parse(markdown_with_source);
+  const parsed_markdown = marked.parse(article.markdown);
   if (typeof parsed_markdown !== 'string') {
     throw new TypeError('Markdown parsing must return a string.');
   }
@@ -173,7 +194,9 @@ export function format_wechat_html(article: social_article): string {
     transformTags: transform_tags,
   });
 
-  return `<section style="margin:0 auto;max-width:720px;color:#242424;background:#ffffff;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;word-break:break-word;">${sanitized_html}</section>`;
+  const trusted_source = format_wechat_source(article.canonical_url);
+
+  return `<section style="margin:0 auto;max-width:720px;color:#242424;background:#ffffff;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;word-break:break-word;">${sanitized_html}${trusted_source}</section>`;
 }
 
 /** Formats a concise plain-text Xiaohongshu post with safe Unicode truncation. */

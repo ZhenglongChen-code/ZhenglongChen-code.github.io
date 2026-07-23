@@ -99,6 +99,26 @@ describe('social article formatters', () => {
     expect(output).toContain('safe label');
   });
 
+  it('isolates the trusted WeChat source from unclosed unsafe raw Markdown', () => {
+    const unsafe_article: social_article = {
+      ...article,
+      markdown: [
+        '$$E = mc^2$$',
+        '',
+        '<script>unclosed unsafe content',
+        '$p(y \\mid x)$',
+      ].join('\n'),
+    };
+
+    const output = format_wechat_html(unsafe_article);
+
+    expect(output).toContain('$$E = mc^2$$');
+    expect(output).not.toContain('p(y \\mid x)');
+    expect(output).toContain('http://106.14.173.234/articles/building-a-writing-home');
+    expect(output).not.toMatch(/<(script|style|link|iframe|object|embed)\b/i);
+    expect(output).not.toContain('unclosed unsafe content');
+  });
+
   it('creates deduplicated sanitized Xiaohongshu topics', () => {
     const tagged_article: social_article = {
       ...article,
