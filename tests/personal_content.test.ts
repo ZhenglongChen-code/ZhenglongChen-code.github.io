@@ -33,10 +33,10 @@ describe('verified personal content', () => {
       'National Mathematical Contest 1st Prize',
       'Blue Bridge Cup 1st Prize',
       'National Mathematics 2nd Prize',
-      'Outstanding Undergraduate Thesis Team',
-      'First-Class Scholarship (NUIST 3)',
+      'Undergraduate Thesis Outstanding Undergraduate Thesis Team',
+      'Scholarship First-Class Scholarship (NUIST 3)',
       'National Scholarship for Postgraduates 2025',
-      'Outstanding Psychological Committee Member',
+      'Other Outstanding Psychological Committee Member',
       'mailto:chenzhenglong@mail.sdu.edu.cn',
       'https://github.com/ZhenglongChen-code',
       'https://www.zhihu.com/people/ni-hao-a-53-88-52',
@@ -54,23 +54,33 @@ describe('verified personal content', () => {
   });
 
   it('preserves verified project titles, organizations, and date ranges', async () => {
-    const project_sources = await Promise.all([
-      read_source('src/content/work/generative-reservoir-characterization.md'),
-      read_source('src/content/work/generative-hydrocarbon-sweet-spots.md'),
-      read_source('src/content/work/intelligent-surrogate-imbalanced-data.md'),
-    ]);
+    const verified_projects = [
+      {
+        source_file: 'src/content/work/generative-reservoir-characterization.md',
+        title: 'title: Generative Characterization of Oil-Gas Reservoirs',
+        organization: 'Chinese Academy of Science ·',
+        date_range: '2024/09 - 2025/03',
+      },
+      {
+        source_file: 'src/content/work/generative-hydrocarbon-sweet-spots.md',
+        title: 'title: Generative Large Model for Hydrocarbon Sweet Spots',
+        organization: 'Chinese Academy of Science ·',
+        date_range: '2023/11 - 2024/03',
+      },
+      {
+        source_file: 'src/content/work/intelligent-surrogate-imbalanced-data.md',
+        title: 'title: Intelligent Surrogate Model for Imbalanced Data',
+        organization: 'Qingdao Soft Control Company ·',
+        date_range: '2023/09 - 2024/09',
+      },
+    ];
 
-    for (const verified_detail of [
-      'title: Generative Characterization of Oil-Gas Reservoirs',
-      'Chinese Academy of Sciences',
-      '2024/09 - 2025/03',
-      'title: Generative Large Model for Hydrocarbon Sweet Spots',
-      '2023/11 - 2024/03',
-      'title: Intelligent Surrogate Model for Imbalanced Data',
-      'Qingdao Soft Control Company',
-      '2023/09 - 2024/09',
-    ]) {
-      expect(project_sources.join('\n')).toContain(verified_detail);
+    for (const verified_project of verified_projects) {
+      const source = await read_source(verified_project.source_file);
+
+      expect(source).toContain(verified_project.title);
+      expect(source).toContain(verified_project.organization);
+      expect(source).toContain(verified_project.date_range);
     }
   });
 });

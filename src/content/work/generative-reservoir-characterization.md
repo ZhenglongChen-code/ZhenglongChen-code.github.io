@@ -1,6 +1,6 @@
 ---
 title: Generative Characterization of Oil-Gas Reservoirs
-description: Chinese Academy of Sciences · 2024/09 - 2025/03. Generative characterization and surrogate modeling for transient Darcy flow in oil-gas reservoirs.
+description: Chinese Academy of Science · 2024/09 - 2025/03. Generative characterization and surrogate modeling for transient Darcy flow in oil-gas reservoirs.
 kind: project
 year: 2025
 tags: [Generative Modeling, Neural Operator, Reservoir Simulation]
