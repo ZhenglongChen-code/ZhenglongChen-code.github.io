@@ -12,6 +12,11 @@ type Props = {
   updated?: Date;
   tags: string[];
   translation_url?: string;
+  headings: ReadonlyArray<{
+    depth: number;
+    slug: string;
+    text: string;
+  }>;
 };
 
 const {
@@ -23,6 +28,7 @@ const {
   updated,
   tags,
   translation_url,
+  headings,
 } = Astro.props;
 const language_code = language === 'zh' ? 'zh-CN' : 'en';
 const date_locale = language === 'zh' ? 'zh-CN' : 'en';
@@ -38,6 +44,12 @@ const format_date = (value: Date) => value.toLocaleDateString(date_locale, {
   day: 'numeric',
   timeZone: 'Asia/Shanghai',
 });
+const table_of_contents = headings.filter((heading) => heading.depth >= 2 && heading.depth <= 3);
+const contents_label = language === 'zh' ? '目录' : 'Contents';
+const progress_label = language === 'zh' ? '阅读进度' : 'Reading progress';
+const copy_label = language === 'zh' ? '复制代码' : 'Copy code';
+const copied_label = language === 'zh' ? '已复制' : 'Copied';
+const unavailable_label = language === 'zh' ? '无法复制' : 'Copy unavailable';
 ---
 
 <Base_layout
@@ -86,8 +98,66 @@ const format_date = (value: Date) => value.toLocaleDateString(date_locale, {
       </div>
     </header>
 
-    <article class="article_body">
-      <slot />
-    </article>
+    <div class="article_reading_layout">
+      {table_of_contents.length > 0 && (
+        <nav class="article_toc" aria-label={contents_label}>
+          <p>{contents_label}</p>
+          <ol>
+            {table_of_contents.map((heading) => (
+              <li class={`toc_depth_${heading.depth}`}>
+                <a href={`#${heading.slug}`}>{heading.text}</a>
+              </li>
+            ))}
+          </ol>
+        </nav>
+      )}
+      <article class="article_body">
+        <slot />
+      </article>
+    </div>
+    <div class="reading_progress" role="progressbar" aria-label={progress_label} aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+      <span></span>
+    </div>
   </div>
+  <script is:inline define:vars={{ copy_label, copied_label, unavailable_label }}>
+    const article_body = document.querySelector('.article_body');
+    const reading_progress = document.querySelector('.reading_progress');
+
+    if (article_body instanceof HTMLElement && reading_progress instanceof HTMLElement) {
+      document.documentElement.classList.add('has_js');
+      const update_reading_progress = () => {
+        const article_start = article_body.getBoundingClientRect().top + window.scrollY;
+        const readable_distance = Math.max(1, article_body.offsetHeight - window.innerHeight);
+        const progress_value = Math.min(1, Math.max(0, (window.scrollY - article_start) / readable_distance));
+        const progress_indicator = reading_progress.querySelector('span');
+        if (progress_indicator instanceof HTMLElement) progress_indicator.style.transform = `scaleX(${progress_value})`;
+        reading_progress.setAttribute('aria-valuenow', String(Math.round(progress_value * 100)));
+      };
+
+      window.addEventListener('scroll', update_reading_progress, { passive: true });
+      window.addEventListener('resize', update_reading_progress);
+      update_reading_progress();
+    }
+
+    for (const code_block of document.querySelectorAll('pre[data-language]')) {
+      const code = code_block.querySelector('code');
+      if (!(code instanceof HTMLElement)) continue;
+      const copy_button = document.createElement('button');
+      copy_button.type = 'button';
+      copy_button.className = 'code_copy_button';
+      copy_button.dataset.copyButton = '';
+      copy_button.textContent = copy_label;
+      copy_button.setAttribute('aria-label', copy_label);
+      copy_button.addEventListener('click', async () => {
+        try {
+          if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable');
+          await navigator.clipboard.writeText(code.textContent ?? '');
+          copy_button.textContent = copied_label;
+        } catch {
+          copy_button.textContent = unavailable_label;
+        }
+      });
+      code_block.append(copy_button);
+    }
+  </script>
 </Base_layout>

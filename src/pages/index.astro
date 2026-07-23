@@ -4,6 +4,7 @@ import Post_list from '../components/post_list.astro';
 import Project_list from '../components/project_list.astro';
 import Base_layout from '../layouts/base_layout.astro';
 import { get_public_posts, get_public_work } from '../lib/content';
+import { calculate_reading_time } from '../lib/reading_time';
 import { article_path } from '../lib/site_routes';
 
 const all_writing = await get_collection('writing');
@@ -12,6 +13,9 @@ const all_work = await get_collection('work');
 const public_work = get_public_work(all_work);
 const selected_work = public_work.filter((work_entry) => work_entry.data.featured);
 const featured_post = public_writing.find((writing_entry) => writing_entry.data.featured);
+const featured_reading_time = featured_post
+  ? calculate_reading_time(featured_post.body ?? '', featured_post.data.language)
+  : undefined;
 const latest_writing = public_writing
   .filter((writing_entry) => writing_entry.id !== featured_post?.id)
   .slice(0, 3);
@@ -92,9 +96,11 @@ const featured_link_aria_label = featured_post
                 })}
               </time>
               <span>{featured_post.data.language === 'zh' ? '中文' : 'English'}</span>
+              {featured_reading_time && <span>{featured_reading_time.label}</span>}
             </div>
             <h3><a href={featured_path}>{featured_post.data.title}</a></h3>
             <p class="featured_summary">{featured_post.data.description}</p>
+            <p class="featured_formula" aria-label="Multimodal inference notation">p(y | x, I) → y*</p>
             <a class="read_link" href={featured_path} aria-label={featured_link_aria_label}>
               {featured_link_label}
             </a>
