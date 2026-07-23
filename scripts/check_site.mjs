@@ -11,6 +11,7 @@ const required_paths = [
   'dist/rss.xml',
   'dist/404.html',
 ];
+const retired_paths = ['dist/work'];
 
 const social_export_extensions = new Set(['.html', '.md', '.txt']);
 
@@ -36,6 +37,19 @@ async function inspect_artifact(relative_path) {
       return `${relative_path}: missing`;
     }
     return `${relative_path}: not readable`;
+  }
+}
+
+/** Return a validation error when a retired public artifact remains in the build. */
+async function inspect_retired_artifact(relative_path) {
+  try {
+    await lstat(resolve(relative_path));
+    return `${relative_path}: retired public output must not exist`;
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
+      return null;
+    }
+    return `${relative_path}: cannot verify absence`;
   }
 }
 
@@ -134,10 +148,12 @@ async function inspect_generated_identity_artifacts() {
 async function check_site() {
   const required_artifact_errors = (await Promise.all(required_paths.map(inspect_artifact)))
     .filter((artifact_error) => artifact_error !== null);
+  const retired_artifact_errors = (await Promise.all(retired_paths.map(inspect_retired_artifact)))
+    .filter((artifact_error) => artifact_error !== null);
   const social_exports_error = await inspect_social_exports();
   const artifact_errors = social_exports_error
-    ? [...required_artifact_errors, social_exports_error]
-    : required_artifact_errors;
+    ? [...required_artifact_errors, ...retired_artifact_errors, social_exports_error]
+    : [...required_artifact_errors, ...retired_artifact_errors];
 
   if (artifact_errors.length > 0) {
     throw new Error(`invalid required site artifacts:\n- ${artifact_errors.join('\n- ')}`);

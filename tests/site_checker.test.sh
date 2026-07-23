@@ -52,6 +52,12 @@ valid_fixture="$test_root/valid"
 make_fixture "$valid_fixture"
 assert_success 'a valid generated artifact set must pass' run_checker "$valid_fixture"
 
+legacy_work_fixture="$test_root/legacy_work"
+make_fixture "$legacy_work_fixture"
+mkdir -p "$legacy_work_fixture/dist/work"
+printf '<html>ChenZL</html>\n' >"$legacy_work_fixture/dist/work/index.html"
+assert_failure 'legacy work output must be rejected' run_checker "$legacy_work_fixture"
+
 chinese_leak_fixture="$test_root/chinese_leak"
 make_fixture "$chinese_leak_fixture"
 printf '<html>陈正龙</html>\n' >"$chinese_leak_fixture/dist/articles/leak.html"
