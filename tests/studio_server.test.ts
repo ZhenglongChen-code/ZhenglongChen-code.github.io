@@ -19,6 +19,18 @@ const valid_publish_request = {
   metadata: { title: 'Formula', description: 'A safe preview.', date: '2026-07-23' },
   commit_message: 'content: publish formula',
 };
+const valid_ui_metadata = {
+  title: 'Form title',
+  description: 'Completed by the Studio form.',
+  date: '2026-07-24',
+  tags: ['studio', 'preview'],
+  language: 'en',
+  featured: true,
+  draft: false,
+  slug: 'form-title',
+  assets: [],
+  social: { zhihu: true, wechat: false, xiaohongshu: true },
+};
 
 const instances: server_instance[] = [];
 const roots: string[] = [];
@@ -142,6 +154,55 @@ describe('local Markdown Studio server', () => {
     }), headers: { 'Content-Type': 'application/json' } });
     expect(response.status).toBe(200);
     expect((await response.json() as { metadata: { title: string; date: string; tags: string[] } }).metadata).toMatchObject({ title: 'Edited title', date: '2026-07-24', tags: ['studio', 'latex'] });
+  });
+
+  it('previews body-only Markdown after the browser has completed metadata in the Studio form', async () => {
+    const { base_url } = await start_server();
+
+    const response = await request(base_url, '/api/preview', { method: 'POST', body: JSON.stringify({
+      markdown: '# Body-only draft\n\nThis is $E = mc^2$.',
+      metadata: valid_ui_metadata,
+    }), headers: { 'Content-Type': 'application/json' } });
+    const body = await response.json() as { preview_html: string; metadata: typeof valid_ui_metadata };
+
+    expect(response.status).toBe(200);
+    expect(body.preview_html).toContain('class="katex"');
+    expect(body.metadata).toMatchObject(valid_ui_metadata);
+  });
+
+  it('previews partial frontmatter with the edited browser form values taking precedence', async () => {
+    const { base_url } = await start_server();
+
+    const response = await request(base_url, '/api/preview', { method: 'POST', body: JSON.stringify({
+      markdown: '---\ntitle: Imported title\ntags:\n  - imported\n---\n\n# Partial draft',
+      metadata: valid_ui_metadata,
+    }), headers: { 'Content-Type': 'application/json' } });
+    const body = await response.json() as { metadata: typeof valid_ui_metadata };
+
+    expect(response.status).toBe(200);
+    expect(body.metadata).toMatchObject({ title: 'Form title', date: '2026-07-24', tags: ['studio', 'preview'] });
+  });
+
+  it('rejects malformed source frontmatter even when the browser form is complete', async () => {
+    const { base_url } = await start_server();
+
+    const response = await request(base_url, '/api/preview', { method: 'POST', body: JSON.stringify({
+      markdown: '---\ntitle: [\n---\n\n# Broken draft',
+      metadata: valid_ui_metadata,
+    }), headers: { 'Content-Type': 'application/json' } });
+
+    expect(response.status).toBe(422);
+  });
+
+  it('rejects body-only Markdown when completed browser metadata remains invalid', async () => {
+    const { base_url } = await start_server();
+
+    const response = await request(base_url, '/api/preview', { method: 'POST', body: JSON.stringify({
+      markdown: '# Body-only draft',
+      metadata: { ...valid_ui_metadata, date: '2026-02-30' },
+    }), headers: { 'Content-Type': 'application/json' } });
+
+    expect(response.status).toBe(422);
   });
 
   it('delegates authenticated publication requests to the injected service', async () => {

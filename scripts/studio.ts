@@ -5,7 +5,7 @@ import { existsSync, realpathSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
-import { discover_local_images, parse_studio_article, serialize_studio_article, type studio_article_metadata } from '../src/lib/studio_article';
+import { discover_local_images, parse_studio_article, parse_studio_article_source, serialize_studio_article, type studio_article_metadata } from '../src/lib/studio_article';
 import { render_markdown_preview } from '../src/lib/markdown_preview';
 import { tencent_cos_adapter } from '../src/lib/studio_images';
 import { local_git_adapter } from '../src/lib/studio_git';
@@ -16,6 +16,18 @@ const default_request_max_bytes = 25_000_000;
 const default_image_max_bytes = 20_000_000;
 const studio_port = 4317;
 const loopback_host = '127.0.0.1';
+const preview_metadata_defaults: studio_article_metadata = {
+  title: '',
+  description: '',
+  date: '',
+  tags: [],
+  language: 'zh',
+  featured: false,
+  draft: false,
+  slug: '',
+  assets: [],
+  social: { zhihu: true, wechat: true, xiaohongshu: true },
+};
 const safe_branch_pattern = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/;
 const safe_bucket_pattern = /^[a-z0-9][a-z0-9-]{1,62}-[0-9]+$/;
 const safe_region_pattern = /^[a-z0-9-]{3,64}$/;
@@ -122,10 +134,10 @@ const configured_publish_service = (configuration: studio_configuration): publis
 
 /** Renders a Studio preview through the shared Markdown renderer without trusting client HTML. */
 const default_preview_service: preview_service = async ({ markdown, slug, metadata }) => {
-  const article = parse_studio_article(markdown, slug);
+  const article_source = parse_studio_article_source(markdown);
   const requested_metadata = is_record(metadata) && !is_untouched_studio_metadata(metadata) ? metadata : {};
-  const merged_metadata = { ...article.metadata, ...requested_metadata, slug } as studio_article_metadata;
-  const validated_article = parse_studio_article(serialize_studio_article({ body: article.body, metadata: merged_metadata }), slug);
+  const merged_metadata = { ...preview_metadata_defaults, ...article_source.metadata, ...requested_metadata, slug } as studio_article_metadata;
+  const validated_article = parse_studio_article(serialize_studio_article({ body: article_source.body, metadata: merged_metadata }), slug);
   const preview_html = await render_markdown_preview(validated_article.body);
   return { preview_html, metadata: validated_article.metadata, unresolved_images: discover_local_images(validated_article.body) };
 };

@@ -29,6 +29,11 @@ export type studio_article = {
   body: string;
 };
 
+export type studio_article_source = {
+  metadata: Record<string, unknown>;
+  body: string;
+};
+
 const slug_pattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const date_scalar_pattern = /^(date|updated):[ \t]*(\d{4}-\d{2}-\d{2})(\s*(?:#.*)?)$/gm;
 
@@ -69,6 +74,27 @@ const optional_string = (value: unknown, field: string, issues: studio_validatio
   return required_string(value, field, issues);
 };
 
+/** Parses Markdown frontmatter without requiring every publish-time metadata field. */
+export const parse_studio_article_source = (source: string): studio_article_source => {
+  let parsed_source: ReturnType<typeof matter>;
+  try {
+    parsed_source = matter(preserve_date_scalars(source));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unable to parse frontmatter.';
+    throw new studio_validation_error([{
+      code: 'invalid_frontmatter',
+      message: `Unable to parse frontmatter: ${message}`,
+    }]);
+  }
+  if (!is_record(parsed_source.data)) {
+    throw new studio_validation_error([{
+      code: 'invalid_frontmatter',
+      message: 'Frontmatter must be an object.',
+    }]);
+  }
+  return { metadata: parsed_source.data, body: parsed_source.content };
+};
+
 /** Validates a content-collection-compatible slug for locally edited articles. */
 export const validate_article_slug = (slug: string): void => {
   if (!slug_pattern.test(slug)) {
@@ -102,17 +128,8 @@ const parse_assets = (value: unknown, issues: studio_validation_issue[]): studio
 /** Imports a Markdown document into the stable Studio article representation. */
 export const parse_studio_article = (source: string, slug: string): studio_article => {
   validate_article_slug(slug);
-  let parsed_source: ReturnType<typeof matter>;
-  try {
-    parsed_source = matter(preserve_date_scalars(source));
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unable to parse frontmatter.';
-    throw new studio_validation_error([{
-      code: 'invalid_frontmatter',
-      message: `Unable to parse frontmatter: ${message}`,
-    }]);
-  }
-  const data = parsed_source.data as Record<string, unknown>;
+  const parsed_source = parse_studio_article_source(source);
+  const data = parsed_source.metadata;
   const issues: studio_validation_issue[] = [];
   const title = required_string(data.title, 'title', issues);
   const description = required_string(data.description, 'description', issues);
@@ -149,7 +166,7 @@ export const parse_studio_article = (source: string, slug: string): studio_artic
 
   return {
     metadata: { title, description, date, updated, tags, language, translation, featured, draft, slug, assets, social },
-    body: parsed_source.content,
+    body: parsed_source.body,
   };
 };
 
