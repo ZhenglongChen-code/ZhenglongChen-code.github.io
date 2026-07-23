@@ -53,6 +53,15 @@ export type studio_server_options = {
 export type studio_server = { server: Server; session_token: string };
 
 const is_record = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
+/** Identifies the metadata object emitted by an untouched, newly reset Studio form. */
+const is_untouched_studio_metadata = (metadata: Record<string, unknown>): boolean => {
+  const social = metadata.social;
+  return metadata.title === '' && metadata.description === '' && metadata.date === '' && (metadata.updated === undefined || metadata.updated === '')
+    && Array.isArray(metadata.tags) && metadata.tags.length === 0 && metadata.language === 'zh'
+    && (metadata.translation === undefined || metadata.translation === '') && metadata.featured === false && metadata.draft === false
+    && metadata.slug === '' && Array.isArray(metadata.assets) && metadata.assets.length === 0
+    && is_record(social) && social.zhihu === true && social.wechat === true && social.xiaohongshu === true;
+};
 const is_positive_integer = (value: string | undefined, maximum: number): value is string => value !== undefined && /^\d+$/.test(value) && Number.isSafeInteger(Number(value)) && Number(value) > 0 && Number(value) <= maximum;
 const is_safe_branch = (value: string): boolean => safe_branch_pattern.test(value) && !value.includes('//') && !value.includes('..') && !value.startsWith('-') && !value.endsWith('.lock');
 const is_https_url = (value: string): boolean => {
@@ -114,7 +123,7 @@ const configured_publish_service = (configuration: studio_configuration): publis
 /** Renders a Studio preview through the shared Markdown renderer without trusting client HTML. */
 const default_preview_service: preview_service = async ({ markdown, slug, metadata }) => {
   const article = parse_studio_article(markdown, slug);
-  const requested_metadata = is_record(metadata) ? metadata : {};
+  const requested_metadata = is_record(metadata) && !is_untouched_studio_metadata(metadata) ? metadata : {};
   const merged_metadata = { ...article.metadata, ...requested_metadata, slug } as studio_article_metadata;
   const validated_article = parse_studio_article(serialize_studio_article({ body: article.body, metadata: merged_metadata }), slug);
   const preview_html = await render_markdown_preview(validated_article.body);

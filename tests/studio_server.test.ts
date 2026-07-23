@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
@@ -116,6 +116,22 @@ describe('local Markdown Studio server', () => {
     const response = await request(base_url, '/api/preview', { method: 'POST', body: JSON.stringify({ markdown: valid_markdown, metadata: { slug: '' } }), headers: { 'Content-Type': 'application/json' } });
     expect(response.status).toBe(200);
     expect((await response.json() as { metadata: { slug: string } }).metadata.slug).toBe('');
+  });
+
+  it('uses imported front matter when the complete untouched Studio form is previewed', async () => {
+    const { base_url } = await start_server();
+    const markdown = await readFile('tests/fixtures/studio/article-with-math.md', 'utf8');
+
+    const response = await request(base_url, '/api/preview', { method: 'POST', body: JSON.stringify({
+      markdown,
+      metadata: { title: '', description: '', date: '', tags: [], language: 'zh', featured: false, draft: false, slug: '', assets: [], social: { zhihu: true, wechat: true, xiaohongshu: true } },
+    }), headers: { 'Content-Type': 'application/json' } });
+    const body = await response.json() as { preview_html: string; metadata: { title: string; draft: boolean; social: { zhihu: boolean } }; unresolved_images: string[] };
+
+    expect(response.status).toBe(200);
+    expect(body.metadata).toMatchObject({ title: '注意力图的本地预览', draft: true, social: { zhihu: false } });
+    expect(body.preview_html).toContain('class="katex"');
+    expect(body.unresolved_images).toEqual(['./attention-map.png']);
   });
 
   it('merges valid UI metadata into preview responses without rolling edits back', async () => {
