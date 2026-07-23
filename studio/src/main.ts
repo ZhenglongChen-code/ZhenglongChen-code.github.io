@@ -41,7 +41,7 @@ export const is_current_import = (current_sequence: number, candidate_sequence: 
 
 /** Supplies complete form values so omitted optional metadata clears deterministically. */
 export const normalize_article_metadata = (metadata: Partial<article_metadata>): article_metadata => ({
-  title: metadata.title ?? '', description: metadata.description ?? '', date: metadata.date ?? '', updated: metadata.updated ?? '', tags: metadata.tags ?? [], language: metadata.language ?? 'zh', translation: metadata.translation ?? '', featured: metadata.featured ?? false, draft: metadata.draft ?? true, slug: metadata.slug ?? '', assets: metadata.assets ?? [], social: { zhihu: metadata.social?.zhihu ?? true, wechat: metadata.social?.wechat ?? true, xiaohongshu: metadata.social?.xiaohongshu ?? true },
+  title: metadata.title ?? '', description: metadata.description ?? '', date: metadata.date ?? '', updated: metadata.updated ?? '', tags: metadata.tags ?? [], language: metadata.language ?? 'zh', translation: metadata.translation ?? '', featured: metadata.featured ?? false, draft: metadata.draft ?? false, slug: metadata.slug ?? '', assets: metadata.assets ?? [], social: { zhihu: metadata.social?.zhihu ?? true, wechat: metadata.social?.wechat ?? true, xiaohongshu: metadata.social?.xiaohongshu ?? true },
 });
 
 /** Reads local storage without letting privacy settings interrupt Studio startup. */
@@ -162,6 +162,10 @@ const reset_document_state = (): void => {
   unresolved_sources = [];
   write_metadata({});
   render_images([]);
+  preview_container.replaceChildren();
+  preview_marker.textContent = 'Awaiting source';
+  update_publish_state(false);
+  announce('New document ready for preview.');
 };
 
 const pair_image_file = (source_path: string, file: File | undefined): void => {

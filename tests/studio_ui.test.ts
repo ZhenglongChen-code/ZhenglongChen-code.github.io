@@ -98,7 +98,7 @@ describe('local markdown studio UI contract', () => {
     expect(next_import_sequence(4)).toBe(5);
     expect(is_current_import(5, 4)).toBe(false);
     expect(is_current_import(5, 5)).toBe(true);
-    expect(normalize_article_metadata({ title: 'Fresh', date: '2026-07-23' })).toMatchObject({ title: 'Fresh', date: '2026-07-23', updated: '', translation: '', assets: [] });
+    expect(normalize_article_metadata({ title: 'Fresh', date: '2026-07-23' })).toMatchObject({ title: 'Fresh', date: '2026-07-23', updated: '', translation: '', assets: [], draft: false });
   });
 
   test('contains storage adapter failures without interrupting Studio initialization', () => {
@@ -115,5 +115,18 @@ describe('local markdown studio UI contract', () => {
 
   test('keeps the 320px layout within its viewport', () => {
     expect(read_source('studio/src/studio.css')).toContain('.studio-grid, .metadata-rail, .workbench, .workspace-panels, .editor-panel, .preview-panel { min-width: 0; max-width: 100%; }');
+  });
+
+  test('clears prior proof only when a newest import is ready to apply', () => {
+    const main = read_source('studio/src/main.ts');
+    const reset_start = main.indexOf('const reset_document_state');
+    const preview_clear = main.indexOf("preview_container.replaceChildren()", reset_start);
+    const import_start = main.indexOf('const import_file');
+    const current_import_check = main.indexOf('if (!is_current_import(import_sequence, file_sequence)) return;', import_start);
+    const reset_call = main.indexOf('reset_document_state();', import_start);
+
+    expect(preview_clear).toBeGreaterThan(reset_start);
+    expect(current_import_check).toBeGreaterThan(import_start);
+    expect(reset_call).toBeGreaterThan(current_import_check);
   });
 });
