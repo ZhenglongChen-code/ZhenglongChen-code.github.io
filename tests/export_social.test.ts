@@ -77,6 +77,15 @@ describe('export_social_articles', () => {
     expect(warnings).toEqual([
       'Social export published, but backup cleanup failed; remove the backup manually.',
     ]);
+
+    await expect(cleanup_published_backup(
+      async () => {
+        throw new Error('backup cleanup failed');
+      },
+      () => {
+        throw new Error('warning logger failed');
+      },
+    )).resolves.toBeUndefined();
   });
 
   it('exports sorted public Chinese articles with platform defaults and disables', async () => {

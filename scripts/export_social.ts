@@ -73,7 +73,11 @@ export async function cleanup_published_backup(
   try {
     await remove_backup();
   } catch {
-    warn('Social export published, but backup cleanup failed; remove the backup manually.');
+    try {
+      warn('Social export published, but backup cleanup failed; remove the backup manually.');
+    } catch {
+      // A diagnostic failure must not turn a completed publication into a rejected operation.
+    }
   }
 }
 

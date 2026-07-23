@@ -4,6 +4,7 @@ import {
   format_xiaohongshu,
   format_zhihu,
   type social_article,
+  validate_unsafe_raw_html,
 } from '../src/lib/social_export';
 
 const article: social_article = {
@@ -186,6 +187,39 @@ describe('social article formatters', () => {
     };
 
     expect(() => format_wechat_html(unsafe_article)).toThrow(/unclosed.*script/i);
+  });
+
+  it('ignores unsafe-looking tags inside Markdown code and HTML comments', () => {
+    const non_executable_markdown = [
+      '`<script>inline code`',
+      '',
+      '```html',
+      '<iframe>fenced code',
+      '```',
+      '',
+      '<!-- <style>commented source -->',
+    ].join('\n');
+
+    expect(() => validate_unsafe_raw_html(non_executable_markdown)).not.toThrow();
+    expect(() => validate_unsafe_raw_html('<script>actual raw HTML')).toThrow(/unclosed.*script/i);
+  });
+
+  it('keeps trusted attribution when canonical text occurs only in removed raw content', () => {
+    const unsafe_source_article: social_article = {
+      ...article,
+      markdown: [
+        `<script>${article.canonical_url}</script>`,
+        `<!-- ${article.canonical_url} -->`,
+      ].join('\n'),
+    };
+
+    const zhihu_output = format_zhihu(unsafe_source_article);
+    const wechat_output = format_wechat_html(unsafe_source_article);
+    const xiaohongshu_output = format_xiaohongshu(unsafe_source_article);
+
+    expect(zhihu_output).toContain(`原文：${article.canonical_url}`);
+    expect(wechat_output).toContain(`href="${article.canonical_url}"`);
+    expect(xiaohongshu_output).toContain(`原文：${article.canonical_url}`);
   });
 
   it('creates deduplicated sanitized Xiaohongshu topics', () => {

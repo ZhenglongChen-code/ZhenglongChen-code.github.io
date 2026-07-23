@@ -141,12 +141,64 @@ function validate_canonical_url(canonical_url: string): void {
   }
 }
 
+/** Masks a source range without changing string offsets used by later validation. */
+function mask_source_range(source: string): string {
+  return ' '.repeat(source.length);
+}
+
+/** Masks inline code spans after fenced blocks and comments are already masked. */
+function mask_inline_code(markdown: string): string {
+  const characters = markdown.split('');
+  let index = 0;
+
+  while (index < characters.length) {
+    if (characters[index] !== '`') {
+      index += 1;
+      continue;
+    }
+
+    let delimiter_length = 1;
+    while (characters[index + delimiter_length] === '`') {
+      delimiter_length += 1;
+    }
+
+    let closing_index = index + delimiter_length;
+    while (closing_index < characters.length) {
+      const delimiter = characters.slice(closing_index, closing_index + delimiter_length).join('');
+      if (delimiter === '`'.repeat(delimiter_length)) {
+        characters.fill(' ', index, closing_index + delimiter_length);
+        index = closing_index + delimiter_length;
+        break;
+      }
+      closing_index += 1;
+    }
+
+    if (closing_index >= characters.length) {
+      index += delimiter_length;
+    }
+  }
+
+  return characters.join('');
+}
+
+/** Masks Markdown regions whose HTML-looking text cannot execute as raw HTML. */
+function mask_non_executable_markdown(markdown: string): string {
+  const without_comments = markdown.replace(/<!--[\s\S]*?(?:-->|$)/gu, mask_source_range);
+  const without_fenced_code = without_comments.replace(
+    /^ {0,3}(`{3,}|~{3,})[^\n]*(?:\n[\s\S]*?)(?:\n\1[^\n]*|$)/gmu,
+    mask_source_range,
+  );
+
+  return mask_inline_code(without_fenced_code);
+}
+
 /** Rejects unclosed non-text raw HTML tags that would silently absorb source content. */
 export function validate_unsafe_raw_html(markdown: string): void {
   const unsafe_tag_pattern = /<\/?(script|style|textarea|iframe|object|embed)\b[^>]*>/giu;
   const open_tags: string[] = [];
+  const executable_markdown = mask_non_executable_markdown(markdown);
 
-  for (const match of markdown.matchAll(unsafe_tag_pattern)) {
+  for (const match of executable_markdown.matchAll(unsafe_tag_pattern)) {
     const raw_tag = match[1];
     if (!raw_tag) {
       continue;
@@ -229,6 +281,25 @@ function validate_social_article(article: social_article): void {
   validate_unsafe_raw_html(article.markdown);
 }
 
+/** Reports whether canonical source survives Markdown parsing and sanitization. */
+function has_surviving_canonical_source(article: social_article): boolean {
+  const protected_math = protect_math_source(article.markdown);
+  const parsed_markdown = marked.parse(protected_math.markdown);
+  if (typeof parsed_markdown !== 'string') {
+    throw new TypeError('Markdown parsing must return a string.');
+  }
+
+  const sanitized_html = sanitize_html(parsed_markdown, {
+    allowedTags: [...wechat_tags],
+    allowedAttributes: { a: ['href'] },
+    allowedSchemes: ['http', 'https', 'mailto'],
+    allowProtocolRelative: false,
+    nonTextTags: ['script', 'style', 'textarea', 'option', 'iframe', 'object', 'embed'],
+  });
+
+  return sanitized_html.includes(escape_html(article.canonical_url));
+}
+
 /** Builds a trusted, escaped WeChat source link after untrusted Markdown is sanitized. */
 function format_wechat_source(canonical_url: string): string {
   const escaped_url = escape_html(canonical_url);
@@ -296,8 +367,9 @@ function get_section_budget(reserved_sections: string[]): number {
 /** Formats the original Markdown with a stable canonical source for Zhihu. */
 export function format_zhihu(article: social_article): string {
   validate_social_article(article);
+  const has_canonical_source = has_surviving_canonical_source(article);
 
-  return article.markdown.includes(article.canonical_url)
+  return has_canonical_source
     ? `${article.markdown}\n`
     : `${article.markdown}\n\n---\n\n原文：${article.canonical_url}\n`;
 }
@@ -305,6 +377,7 @@ export function format_zhihu(article: social_article): string {
 /** Produces sanitized, self-contained HTML with only trusted inline presentation styles. */
 export function format_wechat_html(article: social_article): string {
   validate_social_article(article);
+  const has_canonical_source = has_surviving_canonical_source(article);
 
   const protected_math = protect_math_source(article.markdown);
   const parsed_markdown = marked.parse(protected_math.markdown);
@@ -336,7 +409,7 @@ export function format_wechat_html(article: social_article): string {
   });
 
   const restored_html = restore_math_source(sanitized_html, protected_math.replacements, true);
-  const trusted_source = article.markdown.includes(article.canonical_url)
+  const trusted_source = has_canonical_source
     ? ''
     : format_wechat_source(article.canonical_url);
 
@@ -346,7 +419,7 @@ export function format_wechat_html(article: social_article): string {
 /** Formats a concise plain-text Xiaohongshu post with safe Unicode truncation. */
 export function format_xiaohongshu(article: social_article): string {
   validate_social_article(article);
-  const has_canonical_source = article.markdown.includes(article.canonical_url);
+  const has_canonical_source = has_surviving_canonical_source(article);
   const canonical_line = `原文：${article.canonical_url}`;
   if (count_characters(canonical_line) > xiaohongshu_max_characters) {
     throw new TypeError('Canonical source line exceeds the 1000-character Xiaohongshu limit.');
