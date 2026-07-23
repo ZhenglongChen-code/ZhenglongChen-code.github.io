@@ -114,7 +114,10 @@ describe('local markdown studio UI contract', () => {
   });
 
   test('keeps the 320px layout within its viewport', () => {
-    expect(read_source('studio/src/studio.css')).toContain('.studio-grid, .metadata-rail, .workbench, .workspace-panels, .editor-panel, .preview-panel { min-width: 0; max-width: 100%; }');
+    const studio_css = read_source('studio/src/studio.css');
+
+    expect(studio_css).toContain('.studio-grid, .metadata-rail, .workbench, .workspace-panels, .editor-panel, .preview-panel { min-width: 0; max-width: 100%; }');
+    expect(studio_css).toContain('.workbench { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr);');
   });
 
   test('clears prior proof only when a newest import is ready to apply', () => {
