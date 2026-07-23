@@ -30,9 +30,9 @@ describe('Markdown math rendering', () => {
     const dependencies = JSON.parse(package_json) as { dependencies: Record<string, string> };
 
     expect(astro_config_source).toContain("import { unified as unified_processor } from '@astrojs/markdown-remark';");
-    expect(astro_config_source).toContain("import remark_math from 'remark-math';");
-    expect(astro_config_source).toContain("import rehype_katex from 'rehype-katex';");
+    expect(astro_config_source).toContain("import { markdown_processor_options } from './src/lib/markdown_preview';");
     expect(astro_config_source).toContain('processor: unified_processor({');
+    expect(astro_config_source).toContain('...markdown_processor_options');
     expect(article_layout).toContain("import 'katex/dist/katex.min.css';");
     expect(global_css).not.toContain("katex/dist/katex.min.css");
     expect(dependencies.dependencies.katex).toBe('0.16.47');

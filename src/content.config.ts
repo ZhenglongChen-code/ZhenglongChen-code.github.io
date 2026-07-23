@@ -14,6 +14,11 @@ const writing = define_collection({
     translation: z.string().trim().min(1).optional(),
     featured: z.boolean().default(false),
     draft: z.boolean().default(false),
+    assets: z.array(z.object({
+      object_key: z.string().trim().min(1),
+      public_url: z.string().trim().min(1),
+      source_path: z.string().trim().min(1),
+    })).default([]),
     social: z.object({
       zhihu: z.boolean().default(true),
       wechat: z.boolean().default(true),

@@ -1,7 +1,6 @@
 import { defineConfig as define_config } from 'astro/config';
 import { unified as unified_processor } from '@astrojs/markdown-remark';
-import rehype_katex from 'rehype-katex';
-import remark_math from 'remark-math';
+import { markdown_processor_options } from './src/lib/markdown_preview';
 
 export default define_config({
   output: 'static',
@@ -9,8 +8,7 @@ export default define_config({
   trailingSlash: 'never',
   markdown: {
     processor: unified_processor({
-      remarkPlugins: [remark_math],
-      rehypePlugins: [rehype_katex],
+      ...markdown_processor_options,
     }),
   },
 });
