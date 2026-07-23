@@ -123,7 +123,9 @@ describe('public identity source', () => {
       read_file(resolve_path(process.cwd(), source_file), 'utf8')
     )));
 
-    expect(public_sources.join('\n')).toContain('Zhenglong Chen');
+    for (const [index, source_file] of public_source_files.entries()) {
+      expect(public_sources[index], source_file).toContain('Zhenglong Chen');
+    }
   });
 });
 

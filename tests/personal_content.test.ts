@@ -15,14 +15,35 @@ describe('verified personal content', () => {
     expect(source).toContain('VLM Algorithm Engineer');
   });
 
-  it('lists the verified education and internship record on the about page', async () => {
+  it('lists verified degrees, dates, internships, awards, and contact links on the about page', async () => {
     const source = await read_source('src/pages/about.astro');
 
-    expect(source).toContain('Shandong University');
-    expect(source).toContain('Nanjing University of Information Science and Technology');
-    expect(source).toContain('HUAWEI Hangzhou Research Institute');
-    expect(source).toContain('ZHENHUA Petroleum Research Center');
-    expect(source).toContain('TAL Education Group');
+    for (const verified_detail of [
+      'Master of Science in Mathematics, Shandong University',
+      '2023/09 - 2026/06',
+      'Bachelor of Science in Mathematics, Nanjing University of Information Science and Technology',
+      '2019/09 - 2023/06',
+      'HUAWEI Hangzhou Research Institute',
+      '2025/06 - 2025/09',
+      'ZHENHUA Petroleum Research Center',
+      '2025/04 - 2025/06',
+      'TAL Education Group',
+      '2024/10 - 2024/11',
+      'ICM Finalist',
+      'National Mathematical Contest 1st Prize',
+      'Blue Bridge Cup 1st Prize',
+      'National Mathematics 2nd Prize',
+      'Outstanding Undergraduate Thesis Team',
+      'First-Class Scholarship (NUIST 3)',
+      'National Scholarship for Postgraduates 2025',
+      'Outstanding Psychological Committee Member',
+      'mailto:chenzhenglong@mail.sdu.edu.cn',
+      'https://github.com/ZhenglongChen-code',
+      'https://www.zhihu.com/people/ni-hao-a-53-88-52',
+    ]) {
+      expect(source).toContain(verified_detail);
+    }
+    expect(source).not.toContain('/assets/files/curriculum_vitae.pdf');
   });
 
   it('publishes multimodal learning as research work', async () => {
@@ -32,9 +53,24 @@ describe('verified personal content', () => {
     expect(source).toContain('kind: research');
   });
 
-  it('preserves the verified generative reservoir project title', async () => {
-    const source = await read_source('src/content/work/generative-reservoir-characterization.md');
+  it('preserves verified project titles, organizations, and date ranges', async () => {
+    const project_sources = await Promise.all([
+      read_source('src/content/work/generative-reservoir-characterization.md'),
+      read_source('src/content/work/generative-hydrocarbon-sweet-spots.md'),
+      read_source('src/content/work/intelligent-surrogate-imbalanced-data.md'),
+    ]);
 
-    expect(source).toContain('title: Generative Characterization of Oil-Gas Reservoirs');
+    for (const verified_detail of [
+      'title: Generative Characterization of Oil-Gas Reservoirs',
+      'Chinese Academy of Sciences',
+      '2024/09 - 2025/03',
+      'title: Generative Large Model for Hydrocarbon Sweet Spots',
+      '2023/11 - 2024/03',
+      'title: Intelligent Surrogate Model for Imbalanced Data',
+      'Qingdao Soft Control Company',
+      '2023/09 - 2024/09',
+    ]) {
+      expect(project_sources.join('\n')).toContain(verified_detail);
+    }
   });
 });

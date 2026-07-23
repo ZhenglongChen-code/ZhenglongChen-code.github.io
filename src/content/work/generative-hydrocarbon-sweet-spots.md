@@ -1,6 +1,6 @@
 ---
 title: Generative Large Model for Hydrocarbon Sweet Spots
-description: Small-sample learning and data augmentation for hydrocarbon sweet spot modeling.
+description: Chinese Academy of Sciences · 2023/11 - 2024/03. Small-sample learning and data augmentation for hydrocarbon sweet spot modeling.
 kind: project
 year: 2024
 tags: [Generative Modeling, Small-Sample Learning, Data Augmentation]

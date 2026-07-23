@@ -1,6 +1,6 @@
 ---
 title: Intelligent Surrogate Model for Imbalanced Data
-description: Synthetic oversampling and noise modeling for class-imbalanced rubber-tire manufacturing data.
+description: Qingdao Soft Control Company · 2023/09 - 2024/09. Synthetic oversampling and noise modeling for class-imbalanced rubber-tire manufacturing data.
 kind: project
 year: 2024
 tags: [Imbalanced Data, Synthetic Oversampling, Surrogate Modeling]
