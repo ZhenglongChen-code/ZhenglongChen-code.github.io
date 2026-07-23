@@ -9,12 +9,12 @@ export type image_intent = 'photo' | 'screenshot' | 'diagram';
 export type prepared_image = { bytes: Uint8Array; content_type: 'image/webp' | 'image/png'; object_key: string; public_url: string; sha256: string; source_path: string };
 export interface cos_adapter { inspect_object(object_key: string): Promise<{ sha256: string } | undefined>; upload_object(input: prepared_image): Promise<void>; delete_object(object_key: string): Promise<void>; }
 export type image_source = { source_path: string; bytes: Uint8Array; claimed_content_type: 'image/jpeg' | 'image/png'; intent: image_intent; semantic_name: string };
-export type image_preparation_options = { root_prefix: string; public_base_url: string; year: number; slug: string; max_bytes: number; max_pixels: number };
+export type image_preparation_options = { root_prefix: string; public_base_url: string; year: number; slug: string; max_bytes: number; max_pixels: number; max_width: number; max_height: number };
 export type image_manifest_entry = { source_path: string; object_key: string; public_url: string };
 export type published_image = prepared_image & { status: 'created' | 'reused' };
 export type publish_result = { objects: published_image[]; manifest: image_manifest_entry[] };
 export type cleanup_result = { deleted: string[]; failures: string[] };
-export class studio_image_error extends Error { constructor(readonly code: 'validation' | 'collision', message: string) { super(message); this.name = 'studio_image_error'; } }
+export class studio_image_error extends Error { constructor(readonly code: 'validation' | 'collision' | 'missing_remote_digest', message: string) { super(message); this.name = 'studio_image_error'; } }
 
 type key_input = { root_prefix: string; year: number; slug: string; figure_number: number; semantic_name: string; extension: string };
 type markdown_node = { type?: unknown; url?: unknown; identifier?: unknown; children?: unknown; position?: { start: { offset?: number }; end: { offset?: number } } };
@@ -35,6 +35,14 @@ const public_url = (base: string, object_key: string): string => {
   const base_path = parsed.pathname.replace(/\/$/, '');
   return `${parsed.origin}${base_path}/${object_key.split('/').map(encodeURIComponent).join('/')}`;
 };
+const valid_source_path = (source_path: string): boolean => {
+  if (!source_path || /[\\\x00-\x1f\x7f\s]/.test(source_path) || /[^\x00-\x7f]/.test(source_path) || /[?#]/.test(source_path) || source_path.startsWith('/') || source_path.startsWith('//') || /^[a-z][a-z0-9+.-]*:/i.test(source_path)) return false;
+  let decoded: string;
+  try { decoded = decodeURIComponent(source_path); } catch { return false; }
+  if (/%2f/i.test(source_path) || /[\\\x00-\x1f\x7f\s]/.test(decoded) || /[^\x00-\x7f]/.test(decoded) || decoded.split('/').some((part) => part === '..')) return false;
+  return /^(?:\.?\/?[a-zA-Z0-9][a-zA-Z0-9._/-]*)\.(?:png|jpe?g)$/i.test(source_path);
+};
+const local_destination = (value: string): boolean => !/^(?:[a-z][a-z0-9+.-]*:|\/|#|\?)/i.test(value);
 
 /** Creates an ASCII-only deterministic image object key. */
 export const build_article_object_key = (input: key_input): string => {
@@ -48,14 +56,14 @@ export const build_article_object_key = (input: key_input): string => {
 /** Validates and normalizes local source images without performing network I/O. */
 export const prepare_article_images = async (sources: readonly image_source[], options: image_preparation_options): Promise<{ images: prepared_image[] }> => {
   root_prefix(options.root_prefix); public_url(options.public_base_url, 'test');
-  if (!Number.isSafeInteger(options.max_bytes) || options.max_bytes < 1 || !Number.isSafeInteger(options.max_pixels) || options.max_pixels < 1) invalid('Invalid image limits.');
+  if (!Number.isSafeInteger(options.max_bytes) || options.max_bytes < 1 || !Number.isSafeInteger(options.max_pixels) || options.max_pixels < 1 || !Number.isSafeInteger(options.max_width) || options.max_width < 1 || !Number.isSafeInteger(options.max_height) || options.max_height < 1) invalid('Invalid image limits.');
   const images: prepared_image[] = [];
   for (const [index, source] of sources.entries()) {
-    if (source.bytes.byteLength === 0 || source.bytes.byteLength > options.max_bytes || !/\.(?:png|jpe?g)$/i.test(source.source_path)) invalid(`Invalid source image: ${source.source_path}`);
+    if (source.bytes.byteLength === 0 || source.bytes.byteLength > options.max_bytes || !valid_source_path(source.source_path)) invalid(`Invalid source image: ${source.source_path}`);
     const metadata = await sharp(source.bytes, { limitInputPixels: options.max_pixels, failOn: 'error' }).metadata().catch(() => invalid(`Invalid source image: ${source.source_path}`));
     const detected_content_type = metadata.format === 'jpeg' ? 'image/jpeg' : metadata.format === 'png' ? 'image/png' : undefined;
-    if (!detected_content_type || detected_content_type !== source.claimed_content_type || !metadata.width || !metadata.height || metadata.width * metadata.height > options.max_pixels) invalid(`Invalid source image: ${source.source_path}`);
-    const retain_png = source.intent === 'diagram' && metadata.hasAlpha === true;
+    if (!detected_content_type || detected_content_type !== source.claimed_content_type || !metadata.width || !metadata.height || metadata.width > options.max_width || metadata.height > options.max_height || metadata.width * metadata.height > options.max_pixels) invalid(`Invalid source image: ${source.source_path}`);
+    const retain_png = source.intent === 'diagram';
     const content_type = retain_png ? 'image/png' : 'image/webp';
     const output = await (retain_png ? sharp(source.bytes, { limitInputPixels: options.max_pixels }).rotate().png({ compressionLevel: 9, palette: false }).toBuffer() : sharp(source.bytes, { limitInputPixels: options.max_pixels }).rotate().webp({ quality: 82, effort: 6 }).toBuffer()).catch(() => invalid(`Unable to normalize image: ${source.source_path}`));
     const extension = content_type === 'image/png' ? 'png' : 'webp';
@@ -73,18 +81,19 @@ const offsets = (node: markdown_node): { start: number; end: number } | undefine
 export const rewrite_markdown_images = (markdown: string, urls: ReadonlyMap<string, string>): string => {
   const tree = unified_processor().use(remark_parse).parse(markdown);
   const definitions = collect_markdown_definitions(tree);
-  const referenced = new Set<string>(); const replacements: replacement[] = [];
+  const referenced = new Set<string>(); const first_definitions = new Set<markdown_node>(); const known_definitions = new Set<string>(); const replacements: replacement[] = [];
   visit(tree, (node) => {
     if (node.type === 'imageReference' && typeof node.identifier === 'string') referenced.add(node.identifier);
+    if (node.type === 'definition' && typeof node.identifier === 'string' && !known_definitions.has(node.identifier)) { known_definitions.add(node.identifier); first_definitions.add(node); }
     if (node.type === 'image' && typeof node.url === 'string') {
-      const replacement_url = urls.get(node.url); const range = offsets(node);
-      if (replacement_url && range) { const source = markdown.slice(range.start, range.end); const match = source.match(/^(\!\[[\s\S]*?\]\()(<)?([\s\S]*?)(>)?(\))$/); if (match) replacements.push({ start: range.start, end: range.end, value: `${match[1]}${match[2] ?? ''}${replacement_url}${match[4] ?? ''}${match[5]}` }); }
+      const replacement_url = local_destination(node.url) ? urls.get(node.url) : undefined; const range = offsets(node);
+      if (replacement_url && range) { const source = markdown.slice(range.start, range.end); const destination_start = source.indexOf(node.url); if (destination_start >= 0) replacements.push({ start: range.start, end: range.end, value: source.slice(0, destination_start) + replacement_url + source.slice(destination_start + node.url.length) }); }
     }
   });
   visit(tree, (node) => {
-    if (node.type !== 'definition' || typeof node.identifier !== 'string' || typeof node.url !== 'string' || !referenced.has(node.identifier) || definitions.get(node.identifier) !== node.url) return;
-    const replacement_url = urls.get(node.url); const range = offsets(node); if (!replacement_url || !range) return;
-    const source = markdown.slice(range.start, range.end); const match = source.match(/^(\[[^\]]+\]:\s*)(<)?([^\s>]+)(>?[\s\S]*)$/); if (match) replacements.push({ start: range.start, end: range.end, value: `${match[1]}${match[2] ?? ''}${replacement_url}${match[4]}` });
+    if (node.type !== 'definition' || typeof node.identifier !== 'string' || typeof node.url !== 'string' || !referenced.has(node.identifier) || !first_definitions.has(node) || definitions.get(node.identifier) === undefined) return;
+    const replacement_url = local_destination(node.url) ? urls.get(node.url) : undefined; const range = offsets(node); if (!replacement_url || !range) return;
+    const source = markdown.slice(range.start, range.end); const destination_start = source.indexOf(node.url); if (destination_start >= 0) replacements.push({ start: range.start, end: range.end, value: source.slice(0, destination_start) + replacement_url + source.slice(destination_start + node.url.length) });
   });
   return [...replacements].sort((left, right) => right.start - left.start).reduce((result, replacement) => result.slice(0, replacement.start) + replacement.value + result.slice(replacement.end), markdown);
 };
@@ -104,14 +113,21 @@ export const cleanup_created_images = async (objects: readonly published_image[]
 };
 
 export type tencent_cos_config = { secret_id: string; secret_key: string; region: string; bucket: string; public_base_url: string; root_prefix: string };
+type cos_client = { headObject(input: { Bucket: string; Region: string; Key: string }): Promise<{ headers?: Record<string, string | undefined> }>; putObject(input: { Bucket: string; Region: string; Key: string; Body: Buffer; ContentLength: number; ContentType: string; 'x-cos-meta-sha256': string }): Promise<unknown>; deleteObject(input: { Bucket: string; Region: string; Key: string }): Promise<unknown> };
+type cos_client_factory = (config: tencent_cos_config) => cos_client;
+const valid_cos_config = (config: tencent_cos_config): void => {
+  if (!config.secret_id.trim() || !config.secret_key.trim() || !/^(?:ap|na|eu|sa|cn)-[a-z0-9-]+$/.test(config.region) || !/^[a-z0-9][a-z0-9-]{0,54}-\d{10}$/.test(config.bucket)) invalid('Invalid COS configuration.');
+  root_prefix(config.root_prefix); public_url(config.public_base_url, 'test');
+};
+const valid_adapter_key = (object_key: string, prefix: string): void => { if (!object_key_pattern.test(object_key) || !object_key.startsWith(`${prefix}/articles/`)) invalid('Invalid COS object key.'); };
 /** Tencent COS adapter. Construction is local-only and does not initiate network traffic. */
 export class tencent_cos_adapter implements cos_adapter {
-  private readonly client: cos_sdk;
-  constructor(private readonly config: tencent_cos_config) {
-    if (!config.region || !config.bucket || !config.secret_id || !config.secret_key) invalid('Invalid COS configuration.'); root_prefix(config.root_prefix); public_url(config.public_base_url, 'test');
-    this.client = new cos_sdk({ SecretId: config.secret_id, SecretKey: config.secret_key });
+  private readonly client: cos_client;
+  constructor(private readonly config: tencent_cos_config, client_factory: cos_client_factory = (value) => new cos_sdk({ SecretId: value.secret_id, SecretKey: value.secret_key })) {
+    valid_cos_config(config);
+    this.client = client_factory(config);
   }
-  async inspect_object(object_key: string): Promise<{ sha256: string } | undefined> { try { const result = await this.client.headObject({ Bucket: this.config.bucket, Region: this.config.region, Key: object_key }); const value = result.headers?.['x-cos-meta-sha256']; return typeof value === 'string' ? { sha256: value } : undefined; } catch (error: unknown) { if (typeof error === 'object' && error !== null && 'statusCode' in error && (error as { statusCode?: unknown }).statusCode === 404) return undefined; throw error; } }
-  async upload_object(input: prepared_image): Promise<void> { await this.client.putObject({ Bucket: this.config.bucket, Region: this.config.region, Key: input.object_key, Body: Buffer.from(input.bytes), ContentLength: input.bytes.byteLength, ContentType: input.content_type, 'x-cos-meta-sha256': input.sha256 }); }
-  async delete_object(object_key: string): Promise<void> { await this.client.deleteObject({ Bucket: this.config.bucket, Region: this.config.region, Key: object_key }); }
+  async inspect_object(object_key: string): Promise<{ sha256: string } | undefined> { valid_adapter_key(object_key, this.config.root_prefix); try { const result = await this.client.headObject({ Bucket: this.config.bucket, Region: this.config.region, Key: object_key }); const value = result.headers?.['x-cos-meta-sha256']; if (typeof value !== 'string' || !/^[a-f0-9]{64}$/i.test(value)) throw new studio_image_error('missing_remote_digest', `COS object lacks a valid sha256 digest: ${object_key}`); return { sha256: value }; } catch (error: unknown) { if (typeof error === 'object' && error !== null && 'statusCode' in error && (error as { statusCode?: unknown }).statusCode === 404) return undefined; throw error; } }
+  async upload_object(input: prepared_image): Promise<void> { valid_adapter_key(input.object_key, this.config.root_prefix); await this.client.putObject({ Bucket: this.config.bucket, Region: this.config.region, Key: input.object_key, Body: Buffer.from(input.bytes), ContentLength: input.bytes.byteLength, ContentType: input.content_type, 'x-cos-meta-sha256': input.sha256 }); }
+  async delete_object(object_key: string): Promise<void> { valid_adapter_key(object_key, this.config.root_prefix); await this.client.deleteObject({ Bucket: this.config.bucket, Region: this.config.region, Key: object_key }); }
 }

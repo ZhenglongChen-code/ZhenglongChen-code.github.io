@@ -6,6 +6,7 @@ import {
   prepare_article_images,
   publish_prepared_images,
   rewrite_markdown_images,
+  tencent_cos_adapter,
   type cos_adapter,
 } from '../src/lib/studio_images';
 
@@ -39,7 +40,7 @@ describe('studio_images', () => {
       { source_path: 'photo.jpg', bytes: await jpeg_bytes(), claimed_content_type: 'image/jpeg' as const, intent: 'photo' as const, semantic_name: 'attention-map' },
       { source_path: 'diagram.png', bytes: await png_bytes(8, 6, true), claimed_content_type: 'image/png' as const, intent: 'diagram' as const, semantic_name: 'model-diagram' },
     ];
-    const options = { root_prefix: 'latent-field', public_base_url: 'https://cdn.example.com/images', year: 2026, slug: 'vlm-evaluation', max_bytes: 1_000_000, max_pixels: 1_000_000 };
+    const options = { root_prefix: 'latent-field', public_base_url: 'https://cdn.example.com/images', year: 2026, slug: 'vlm-evaluation', max_bytes: 1_000_000, max_pixels: 1_000_000, max_width: 1000, max_height: 1000 };
     const first = await prepare_article_images(sources, options);
     const second = await prepare_article_images(sources, options);
     expect(first.images.map((image) => image.object_key)).toEqual(['latent-field/articles/2026/vlm-evaluation/fig-01-attention-map.webp', 'latent-field/articles/2026/vlm-evaluation/fig-02-model-diagram.png']);
@@ -51,7 +52,7 @@ describe('studio_images', () => {
 
   it('rejects MIME mismatch, corrupted files, unsupported input, and resource-limit violations', async () => {
     const valid_png = await png_bytes();
-    const options = { root_prefix: 'latent-field', public_base_url: 'https://cdn.example.com', year: 2026, slug: 'vlm-evaluation', max_bytes: valid_png.length - 1, max_pixels: 10 };
+    const options = { root_prefix: 'latent-field', public_base_url: 'https://cdn.example.com', year: 2026, slug: 'vlm-evaluation', max_bytes: valid_png.length - 1, max_pixels: 10, max_width: 1000, max_height: 1000 };
     await expect(prepare_article_images([{ source_path: 'x.png', bytes: valid_png, claimed_content_type: 'image/jpeg', intent: 'screenshot', semantic_name: 'x' }], options)).rejects.toMatchObject({ code: 'validation' });
     await expect(prepare_article_images([{ source_path: 'x.png', bytes: new Uint8Array([1, 2, 3]), claimed_content_type: 'image/png', intent: 'screenshot', semantic_name: 'x' }], { ...options, max_bytes: 1000, max_pixels: 1000 })).rejects.toMatchObject({ code: 'validation' });
     await expect(prepare_article_images([{ source_path: 'x.gif', bytes: valid_png, claimed_content_type: 'image/png', intent: 'screenshot', semantic_name: 'x' }], { ...options, max_bytes: 1000, max_pixels: 1000 })).rejects.toMatchObject({ code: 'validation' });
@@ -72,7 +73,7 @@ describe('studio_images', () => {
   });
 
   it('publishes immutable manifest entries, reuses matching objects, detects collisions, and cleans up only created keys', async () => {
-    const prepared = (await prepare_article_images([{ source_path: 'shot.png', bytes: await png_bytes(), claimed_content_type: 'image/png', intent: 'screenshot', semantic_name: 'screen' }], { root_prefix: 'latent-field', public_base_url: 'https://cdn.example.com/base', year: 2026, slug: 'vlm-evaluation', max_bytes: 1_000_000, max_pixels: 1_000_000 })).images;
+    const prepared = (await prepare_article_images([{ source_path: 'shot.png', bytes: await png_bytes(), claimed_content_type: 'image/png', intent: 'screenshot', semantic_name: 'screen' }], { root_prefix: 'latent-field', public_base_url: 'https://cdn.example.com/base', year: 2026, slug: 'vlm-evaluation', max_bytes: 1_000_000, max_pixels: 1_000_000, max_width: 1000, max_height: 1000 })).images;
     const cos = new fake_cos_adapter();
     const published = await publish_prepared_images(prepared, cos);
     expect(published.manifest).toEqual([{ source_path: 'shot.png', object_key: prepared[0]!.object_key, public_url: prepared[0]!.public_url }]);
@@ -85,5 +86,46 @@ describe('studio_images', () => {
     const cleanup = await cleanup_created_images(published.objects, cos);
     expect(cleanup.deleted).toEqual([]);
     expect(cleanup.failures).toEqual([prepared[0]!.object_key]);
+  });
+
+  it('rejects unsafe paired source paths before image decoding', async () => {
+    const bytes = await png_bytes();
+    const options = { root_prefix: 'latent-field', public_base_url: 'https://cdn.example.com', year: 2026, slug: 'vlm-evaluation', max_bytes: 1_000_000, max_pixels: 1_000_000, max_width: 1000, max_height: 1000 };
+    for (const source_path of ['../x.png', '%2e%2e/x.png', 'a%2fb.png', '/x.png', '//host/x.png', 'a\\b.png', 'a b.png', '图.png', 'a.png?x=1', 'a.png#x', 'a.gif']) {
+      await expect(prepare_article_images([{ source_path, bytes, claimed_content_type: 'image/png', intent: 'diagram', semantic_name: 'map' }], options)).rejects.toMatchObject({ code: 'validation' });
+    }
+  });
+
+  it('preserves opaque diagrams as PNG and rejects dimensions beyond separate limits', async () => {
+    const options = { root_prefix: 'latent-field', public_base_url: 'https://cdn.example.com', year: 2026, slug: 'vlm-evaluation', max_bytes: 1_000_000, max_pixels: 1_000_000, max_width: 20, max_height: 20 };
+    const result = await prepare_article_images([{ source_path: 'diagram.png', bytes: await png_bytes(), claimed_content_type: 'image/png', intent: 'diagram', semantic_name: 'map' }], options);
+    expect(result.images[0]!.content_type).toBe('image/png');
+    await expect(prepare_article_images([{ source_path: 'wide.png', bytes: await png_bytes(21, 1), claimed_content_type: 'image/png', intent: 'screenshot', semantic_name: 'wide' }], options)).rejects.toMatchObject({ code: 'validation' });
+  });
+
+  it('rewrites local destinations with titles, only the effective definition, and never a remote map match', () => {
+    const result = rewrite_markdown_images('![one](./a.png "caption") ![ref][FIG]\n![remote](https://x/a.png)\n\n[fig]: ref.png "title"\n[FIG]: ref.png', new Map([['./a.png', 'https://cdn.example.com/a.webp'], ['ref.png', 'https://cdn.example.com/ref.webp'], ['https://x/a.png', 'https://cdn.example.com/no.webp']]));
+    expect(result).toContain('![one](https://cdn.example.com/a.webp "caption")');
+    expect(result).toContain('[fig]: https://cdn.example.com/ref.webp "title"');
+    expect(result).toContain('[FIG]: ref.png');
+    expect(result).toContain('![remote](https://x/a.png)');
+  });
+
+  it('treats missing remote digests as a safe COS failure and only 404 as absent', async () => {
+    const valid_config = { secret_id: 'id', secret_key: 'key', region: 'ap-guangzhou', bucket: 'bucket-1234567890', root_prefix: 'latent-field', public_base_url: 'https://cdn.example.com' };
+    const missing_digest_client = { headObject: async () => ({ headers: {} }), putObject: async () => ({}), deleteObject: async () => ({}) };
+    const missing_digest_adapter = new tencent_cos_adapter(valid_config, () => missing_digest_client);
+    await expect(missing_digest_adapter.inspect_object('latent-field/articles/2026/vlm-evaluation/fig-01-map.webp')).rejects.toMatchObject({ code: 'missing_remote_digest' });
+    const absent_client = { headObject: async () => { throw { statusCode: 404 }; }, putObject: async () => ({}), deleteObject: async () => ({}) };
+    await expect(new tencent_cos_adapter(valid_config, () => absent_client).inspect_object('latent-field/articles/2026/vlm-evaluation/fig-01-map.webp')).resolves.toBeUndefined();
+  });
+
+  it('rejects invalid COS config and object keys before creating or calling a client', async () => {
+    let factory_calls = 0;
+    const factory = () => { factory_calls += 1; return { headObject: async () => ({ headers: { 'x-cos-meta-sha256': 'x' } }), putObject: async () => ({}), deleteObject: async () => ({}) }; };
+    expect(() => new tencent_cos_adapter({ secret_id: ' ', secret_key: 'key', region: 'bad region', bucket: 'bucket', root_prefix: '../x', public_base_url: 'http://user:pass@example.com' }, factory)).toThrow(/invalid/i);
+    expect(factory_calls).toBe(0);
+    const adapter = new tencent_cos_adapter({ secret_id: 'id', secret_key: 'key', region: 'ap-guangzhou', bucket: 'bucket-1234567890', root_prefix: 'latent-field', public_base_url: 'https://cdn.example.com' }, factory);
+    await expect(adapter.delete_object('../unsafe')).rejects.toMatchObject({ code: 'validation' });
   });
 });
