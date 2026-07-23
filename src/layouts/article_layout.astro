@@ -49,7 +49,10 @@ const format_date = (value: Date) => value.toLocaleDateString(date_locale, {
 >
   <div class="shell" lang={language_code}>
     <header class="article_header">
-      <h1>{title}</h1>
+      <div>
+        <p class="article_kicker">Latent Field / Article</p>
+        <h1>{title}</h1>
+      </div>
       <div class="article_deck">
         <p>{description}</p>
         <div class="article_meta">

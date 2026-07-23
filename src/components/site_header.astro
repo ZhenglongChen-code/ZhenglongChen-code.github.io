@@ -15,12 +15,13 @@ const current_section: site_section | '' = pathname === '/'
           || pathname === '/tags' || pathname.startsWith('/tags/')
         ? 'articles'
         : '';
-const current_year = new Date().getFullYear();
 ---
 
 <header class="site_header shell" lang="en">
-  <a class="site_brand" href="/" aria-label="Zhenglong Chen, return home">Zhenglong Chen</a>
-  <p class="masthead_note" aria-hidden="true"><span lang="en">Field Notes</span> · {current_year}</p>
+  <a class="site_brand" href="/" aria-label="Zhenglong Chen, return home">
+    <span class="site_brand_title">LATENT FIELD</span>
+    <span class="site_brand_note">ZHENGLONG CHEN · RESEARCH NOTES</span>
+  </a>
   <nav class="primary_nav" aria-label="Primary navigation">
     <ul>
       {navigation_items.map((navigation_item) => (

@@ -36,16 +36,21 @@ const featured_link_aria_label = featured_post
 >
   <div class="shell">
     <section class="hero" aria-labelledby="hero_title">
+      <aside class="hero_margin" aria-label="Site index">
+        <span>Portfolio / 2026</span>
+        <span>Vision × Language × Intelligence</span>
+      </aside>
       <div class="hero_heading">
-        <p class="eyebrow">Research · Writing · Building</p>
+        <p class="eyebrow">VLM Algorithm Engineer</p>
         <h1 id="hero_title">Zhenglong Chen</h1>
       </div>
       <div class="hero_copy">
-        <p class="role">VLM Algorithm Engineer</p>
-        <p class="intro">关注多模态研究、数学思考与 <span lang="en">AI</span> 产品，也在这里记录长期写作与实践。</p>
+        <p class="index_mark">[ Research note 01 ]</p>
+        <p class="intro">VLM research, mathematical thinking, and AI products — with notes on the questions, systems, and long-form writing that connect them.</p>
+        <p class="hero_detail">Multimodal learning<br />Visual reasoning<br />Model evaluation</p>
         <div class="hero_links">
-          <a href="#selected_work">查看项目</a>
-          <a href="#selected_writing">阅读文章</a>
+          <a href="#selected_work">Selected index</a>
+          <a href="#selected_writing">Latest notes</a>
         </div>
       </div>
     </section>
@@ -53,10 +58,10 @@ const featured_link_aria_label = featured_post
     <section class="home_section" id="selected_work" aria-labelledby="work_title">
       <header class="section_header">
         <div>
-          <p class="section_kicker">01 / Selected Work</p>
-          <h2 id="work_title">代表项目</h2>
+          <p class="section_kicker">01 / Index</p>
+          <h2 id="work_title">Selected Research &amp; Projects</h2>
         </div>
-          <a class="section_link" href="/projects">查看全部</a>
+        <a class="section_link" href="/projects">Full index</a>
       </header>
       <Project_list work_entries={selected_work} />
     </section>
@@ -64,10 +69,10 @@ const featured_link_aria_label = featured_post
     <section class="home_section writing_section" id="selected_writing" aria-labelledby="writing_title">
       <header class="section_header writing_header">
         <div>
-          <p class="section_kicker">02 / Field Notes</p>
-          <h2 id="writing_title">写作与笔记</h2>
+          <p class="section_kicker">02 / Research notes</p>
+          <h2 id="writing_title">Latest Articles</h2>
         </div>
-        <a class="section_link" href="/articles">全部文章</a>
+        <a class="section_link" href="/articles">All articles</a>
       </header>
 
       <div class="editorial_grid">
@@ -93,8 +98,8 @@ const featured_link_aria_label = featured_post
           </article>
         )}
 
-        <aside class="latest_posts" aria-label="最新文章">
-          <p class="list_heading">最新文章</p>
+        <aside class="latest_posts" aria-label="Latest articles">
+          <p class="list_heading">Recent index</p>
           <Post_list writing_entries={latest_writing} />
         </aside>
       </div>
