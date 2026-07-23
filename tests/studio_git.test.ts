@@ -125,4 +125,53 @@ describe('local_git_adapter', () => {
       await expect(adapter.publish({ operation: 'publish_new', slug: 'invalid-config', source: new Uint8Array([1]), commit_message: 'Publish config' })).resolves.toMatchObject({ ok: false, code: 'validation' });
     }
   });
+
+  it('rejects top-level mismatch and every unsafe writing-directory configuration', async () => {
+    const { root } = await make_repository();
+    await mkdir(join(root, 'nested'));
+    const nested = new local_git_adapter({ repository_root: join(root, 'nested'), publication_branch: 'main', remote_name: 'origin', writing_directory: 'src/content/writing' });
+    await expect(nested.publish({ operation: 'publish_new', slug: 'x', source: new Uint8Array([1]), commit_message: 'Publish x' })).resolves.toMatchObject({ ok: false, code: 'unsafe_path' });
+    for (const writing_directory of ['../src/content/writing', '/tmp/writing', 'src\\content\\writing']) {
+      const adapter = new local_git_adapter({ repository_root: root, publication_branch: 'main', remote_name: 'origin', writing_directory });
+      await expect(adapter.publish({ operation: 'publish_new', slug: 'safe', source: new Uint8Array([1]), commit_message: 'Publish safe' })).resolves.toMatchObject({ ok: false, code: 'validation' });
+    }
+    const outside = join(root, 'outside'); await mkdir(outside); await rm(join(root, 'src/content/writing'), { recursive: true }); await symlink(outside, join(root, 'src/content/writing'));
+    const escaped = new local_git_adapter({ repository_root: root, publication_branch: 'main', remote_name: 'origin', writing_directory: 'src/content/writing' });
+    await expect(escaped.publish({ operation: 'publish_new', slug: 'safe', source: new Uint8Array([1]), commit_message: 'Publish safe' })).resolves.toMatchObject({ ok: false, code: 'unsafe_path' });
+  });
+
+  it('detects common-dir markers in a real linked worktree and real unmerged index entries', async () => {
+    const { root } = await make_repository();
+    const linked = join(root, '..', 'linked'); await git(root, 'worktree', 'add', '-b', 'linked-branch', linked);
+    const marker = await git(linked, 'rev-parse', '--git-path', 'MERGE_HEAD'); const marker_file = marker.startsWith('/') ? marker : join(linked, marker); await mkdir(dirname(marker_file), { recursive: true }); await writeFile(marker_file, 'x');
+    const linked_adapter = new local_git_adapter({ repository_root: linked, publication_branch: 'linked-branch', remote_name: 'origin', writing_directory: 'src/content/writing' });
+    await expect(linked_adapter.publish({ operation: 'publish_new', slug: 'linked', source: new Uint8Array([1]), commit_message: 'Publish linked' })).resolves.toMatchObject({ ok: false, code: 'repository_busy' });
+    await rm(marker_file);
+    await writeFile(join(root, 'src/content/writing/conflict.md'), 'base\n'); await git(root, 'add', '--', 'src/content/writing/conflict.md'); await git(root, 'commit', '-m', 'conflict base');
+    await git(root, 'checkout', '-b', 'conflict-side'); await writeFile(join(root, 'src/content/writing/conflict.md'), 'side\n'); await git(root, 'commit', '-am', 'side'); await git(root, 'checkout', 'main'); await writeFile(join(root, 'src/content/writing/conflict.md'), 'main\n'); await git(root, 'commit', '-am', 'main');
+    await exec_file_async('git', ['merge', 'conflict-side'], { cwd: root }).catch(() => undefined);
+    const adapter = new local_git_adapter({ repository_root: root, publication_branch: 'main', remote_name: 'origin', writing_directory: 'src/content/writing' });
+    await expect(adapter.publish({ operation: 'publish_new', slug: 'conflict', source: new Uint8Array([1]), commit_message: 'Publish conflict' })).resolves.toMatchObject({ ok: false, code: 'repository_busy' });
+  });
+
+  it('detects a hook-mutated committed blob and snapshots caller bytes before delayed commands', async () => {
+    const { root } = await make_repository();
+    const hook = join(root, '.git/hooks/pre-commit'); await writeFile(hook, '#!/bin/sh\nprintf changed > src/content/writing/hooked.md\ngit add -- src/content/writing/hooked.md\n'); await (await import('node:fs/promises')).chmod(hook, 0o755);
+    const adapter = new local_git_adapter({ repository_root: root, publication_branch: 'main', remote_name: 'origin', writing_directory: 'src/content/writing' });
+    await expect(adapter.publish({ operation: 'publish_new', slug: 'hooked', source: new TextEncoder().encode('original'), commit_message: 'Publish hooked' })).resolves.toMatchObject({ ok: false, code: 'integrity_failed' });
+    await rm(hook);
+    let delayed = false;
+    const runner: git_command_runner = async (file, args, cwd) => { if (args[0] === 'rev-parse' && !delayed) { delayed = true; await new Promise<void>((resolve_delay) => setTimeout(resolve_delay, 25)); } const output = await exec_file_async(file, [...args], { cwd }); return { stdout: output.stdout, stderr: output.stderr }; };
+    const snap_adapter = new local_git_adapter({ repository_root: root, publication_branch: 'main', remote_name: 'origin', writing_directory: 'src/content/writing', command_runner: runner });
+    const source = new Uint8Array(new TextEncoder().encode('snapshot'));
+    const pending = snap_adapter.publish({ operation: 'publish_new', slug: 'snapshot', source, commit_message: 'Publish snapshot' }); source.fill(120);
+    await expect(pending).resolves.toMatchObject({ ok: true }); expect(await readFile(join(root, 'src/content/writing/snapshot.md'), 'utf8')).toBe('snapshot');
+  });
+
+  it('preserves unrelated unstaged, staged, and untracked state while committing only target', async () => {
+    const { root, adapter } = await make_repository();
+    await writeFile(join(root, 'README.md'), 'unstaged\n'); await writeFile(join(root, 'staged.md'), 'staged\n'); await writeFile(join(root, 'untracked.md'), 'untracked\n'); await git(root, 'add', '--', 'staged.md');
+    await expect(adapter.publish({ operation: 'publish_new', slug: 'only', source: new Uint8Array([111, 110, 108, 121]), commit_message: 'Publish only' })).resolves.toMatchObject({ ok: true });
+    expect(await git(root, 'diff', '--name-only')).toBe('README.md'); expect(await git(root, 'diff', '--cached', '--name-only')).toBe('staged.md'); expect(await readFile(join(root, 'untracked.md'), 'utf8')).toBe('untracked\n'); expect(await git(root, 'show', '--format=', '--name-only', 'HEAD')).toBe('src/content/writing/only.md');
+  });
 });
