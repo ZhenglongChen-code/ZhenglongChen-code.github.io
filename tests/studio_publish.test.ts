@@ -70,9 +70,9 @@ describe('studio publication', () => {
     const journal = await (await import('node:fs/promises')).readFile(join(root, '.studio/transactions', `${request.request_id}.json`), 'utf8');
     expect(journal).not.toContain(request.markdown); expect(journal).not.toContain('Description'); expect(journal).toContain('fig-01-figure.png');
   });
-  it('retains created images when Git reports a retained local commit', async () => {
-    let cleanup_calls = 0; const result = await publish_article(request, { ...publication_dependencies(await journal_root(), { verify_versioning: async () => undefined, inspect_object: async () => undefined, upload_object: async () => ({ version_id: 'v1' }), delete_object: async () => { cleanup_calls += 1; } }), prepare_images: async () => [], git: with_baseline({ publish: async () => ({ ok: false as const, code: 'push_failed' as const, commit_retained: true as const, message: 'push failed', commit_sha: 'e'.repeat(40), committed_paths: ['x'], recovery: 'push later' }) }) });
-    expect(result).toMatchObject({ kind: 'committed_local' }); expect(cleanup_calls).toBe(0);
+  it('retains created images when Git retains a critical post-commit recovery state', async () => {
+    let cleanup_calls = 0; let uploads = 0; const result = await publish_article(request, { ...publication_dependencies(await journal_root(), { verify_versioning: async () => undefined, inspect_object: async () => undefined, upload_object: async () => { uploads += 1; return { version_id: 'v1' }; }, delete_object: async () => { cleanup_calls += 1; } }), git: with_baseline({ publish: async () => ({ ok: false as const, code: 'critical_recovery_failed' as const, commit_retained: true as const, message: 'parent changed', commit_sha: 'e'.repeat(40) }) }) });
+    expect(result).toMatchObject({ kind: 'committed_local' }); expect(uploads).toBe(1); expect(cleanup_calls).toBe(0);
   });
   it('uses metadata form values when serializing frontmatter', async () => {
     let source = ''; const changed = { ...request, request_id: '11111111111111111111111111111111', metadata: { ...request.metadata, featured: true, translation: 'en-post', social: { zhihu: false, wechat: true, xiaohongshu: false } } };

@@ -74,6 +74,32 @@ describe('local_git_adapter', () => {
     await expect(readFile(join(root, target_path))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
+  it('retains and does not push a Studio commit whose parent changed after the baseline check', async () => {
+    const { root, remote } = await make_repository(); const target_path = 'src/content/writing/raced-parent.md'; let injected = false; let push_calls = 0;
+    const runner: git_command_runner = async (file, args, cwd) => {
+      if (!injected && args[0] === 'add' && args.includes(target_path)) {
+        injected = true;
+        await writeFile(join(root, 'README.md'), 'concurrent advance\n'); await git(root, 'add', '--', 'README.md'); await git(root, 'commit', '-m', 'Concurrent advance');
+      }
+      if (args[0] === 'push') push_calls += 1;
+      const output = await exec_file_async(file, [...args], { cwd });
+      return { stdout: output.stdout, stderr: output.stderr };
+    };
+    const adapter = new local_git_adapter({ repository_root: root, publication_branch: 'main', remote_name: 'origin', writing_directory: 'src/content/writing', command_runner: runner }); const baseline = await adapter.capture_baseline({ target_path });
+    const result = await adapter.publish({ operation: 'publish_new', slug: 'raced-parent', source: new TextEncoder().encode('raced\n'), commit_message: 'Race parent', expected_baseline_sha: baseline.baseline_sha });
+    expect(result).toMatchObject({ ok: false, code: 'critical_recovery_failed', commit_retained: true, commit_sha: expect.stringMatching(/^[a-f0-9]{40}$/) }); expect(push_calls).toBe(0);
+    if (result.ok || result.code !== 'critical_recovery_failed' || !result.commit_sha) throw new Error('Studio commit was not safely retained.');
+    expect(await git(root, 'show', '-s', '--format=%P', result.commit_sha)).not.toBe(baseline.baseline_sha); expect(await git(remote, 'rev-parse', 'main')).toBe(baseline.baseline_sha);
+  });
+
+  it('pushes a Studio commit whose parent still matches the captured baseline', async () => {
+    const { root, adapter } = await make_repository(); const target_path = 'src/content/writing/normal-parent.md'; const baseline = await adapter.capture_baseline({ target_path });
+    const result = await adapter.publish({ operation: 'publish_new', slug: 'normal-parent', source: new TextEncoder().encode('normal\n'), commit_message: 'Normal parent', expected_baseline_sha: baseline.baseline_sha });
+    expect(result).toMatchObject({ ok: true, push_status: 'pushed', commit_sha: expect.stringMatching(/^[a-f0-9]{40}$/) });
+    if (!result.ok) throw new Error('Studio commit was not pushed.');
+    expect(await git(root, 'show', '-s', '--format=%P', result.commit_sha)).toBe(baseline.baseline_sha);
+  });
+
   it('preserves article modes despite restrictive umask', async () => {
     const { root, adapter } = await make_repository(); const original_umask = process.umask(0o077);
     try {

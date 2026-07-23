@@ -186,6 +186,7 @@ export class local_git_adapter implements git_adapter {
       await this.run_git('add', '--', relative_path);
       await this.run_git('commit', '--only', '-m', input.commit_message, '--', relative_path); commit_created = true;
       const commit_sha = await this.run_git('rev-parse', 'HEAD').catch(async () => this.run_git('show', '-s', '--format=%H', 'HEAD')); retained_sha = commit_sha;
+      if (input.expected_baseline_sha !== undefined && (await this.run_git('show', '-s', '--format=%P', commit_sha)) !== input.expected_baseline_sha) return { ok: false, code: 'critical_recovery_failed', commit_retained: true, commit_sha, message: 'The Studio commit parent changed after its baseline check; the local commit was retained and was not pushed.' };
       const changed = (await this.run_git('diff-tree', '--no-commit-id', '--name-only', '-r', 'HEAD')).split('\n').filter(Boolean);
       if (changed.length !== 1 || changed[0] !== relative_path || !this.bytes_equal(await this.committed_bytes(commit_sha, relative_path), input.source)) {
         try {
