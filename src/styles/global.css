@@ -2,12 +2,12 @@
   color-scheme: light;
   --paper: #f3efe6;
   --ink: #181815;
-  --muted: #716b61;
-  --rule: #c9c0b1;
+  --muted: #6c6962;
+  --rule: rgba(24, 24, 21, .18);
   --cobalt: #1649c2;
   --vermilion: #b53325;
-  --serif: Iowan Old Style, Palatino Linotype, Book Antiqua, Baskerville, Georgia, serif;
-  --sans: Avenir Next, Avenir, Gill Sans, system-ui, sans-serif;
+  --serif: Iowan Old Style, Palatino Linotype, Book Antiqua, Georgia, serif;
+  --sans: Avenir Next, Avenir, Helvetica Neue, sans-serif;
   --mono: SFMono-Regular, Consolas, Liberation Mono, monospace;
   --content_width: 1472px;
 }

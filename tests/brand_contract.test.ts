@@ -20,12 +20,17 @@ describe('Latent Field brand contract', () => {
     expect(home_source).toContain('VLM Algorithm Engineer');
   });
 
-  test('sets the approved Paper Index palette', async () => {
+  test('sets the exact approved Paper Index palette and type stacks', async () => {
     const css_source = await read_source_file('src/styles/global.css');
 
     expect(css_source).toContain('--paper: #f3efe6');
+    expect(css_source).toContain('--ink: #181815');
+    expect(css_source).toContain('--muted: #6c6962');
+    expect(css_source).toContain('--rule: rgba(24, 24, 21, .18)');
     expect(css_source).toContain('--cobalt: #1649c2');
     expect(css_source).toContain('--vermilion: #b53325');
+    expect(css_source).toContain('--serif: Iowan Old Style, Palatino Linotype, Book Antiqua, Georgia, serif');
+    expect(css_source).toContain('--sans: Avenir Next, Avenir, Helvetica Neue, sans-serif');
   });
 
   test('uses the Paper Index document frame', async () => {

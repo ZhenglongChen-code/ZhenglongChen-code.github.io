@@ -5,7 +5,7 @@ date: 2026-07-23
 tags: [工程, 数学]
 language: zh
 featured: false
-draft: false
+draft: true
 social:
   zhihu: false
   wechat: false
