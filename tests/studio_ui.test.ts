@@ -118,6 +118,8 @@ describe('local markdown studio UI contract', () => {
 
     expect(studio_css).toContain('.studio-grid, .metadata-rail, .workbench, .workspace-panels, .editor-panel, .preview-panel { min-width: 0; max-width: 100%; }');
     expect(studio_css).toContain('.workbench { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr);');
+    expect(studio_css).toContain('.workbench-topline { align-items: flex-start; flex-wrap: wrap;');
+    expect(studio_css).toContain('.quiet-feedback { min-width: 0; overflow-wrap: anywhere;');
   });
 
   test('clears prior proof only when a newest import is ready to apply', () => {
