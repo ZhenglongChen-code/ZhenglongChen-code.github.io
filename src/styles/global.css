@@ -1,3 +1,5 @@
+@import 'katex/dist/katex.min.css';
+
 :root {
   color-scheme: light;
   --paper: #f3efe5;
@@ -690,6 +692,13 @@ select:focus-visible {
   font-size: 0.87rem;
   line-height: 1.65;
   tab-size: 2;
+}
+
+.article_body .katex-display {
+  max-width: 100%;
+  margin: 2rem 0;
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 
 .article_body table {
