@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, test } from 'vitest';
-import { is_latest_preview, next_tab_index } from '../studio/src/studio_logic';
+import { is_latest_preview, next_tab_index } from '../studio/src/main';
 
 const read_source = (path: string): string => readFileSync(resolve(process.cwd(), path), 'utf8');
 
@@ -55,9 +55,12 @@ describe('local markdown studio UI contract', () => {
     expect(main).toContain('server-sanitized');
     expect(main).toContain('new Map<string, File>()');
     expect(main).toContain("image_input.accept = 'image/*'");
+    expect(main).toContain("row.dataset.sourcePath = source_path");
+    expect(main).toContain("row.addEventListener('drop'");
     expect(main).toContain('AbortController');
     expect(main).toContain('preview_sequence');
     expect(main).toContain('image_files');
+    expect(main).not.toContain("./studio_logic");
     expect(vite).toContain("root: 'studio'");
     expect(vite).toContain("outDir: 'dist'");
     expect(vite).toContain('emptyOutDir: true');
@@ -68,5 +71,16 @@ describe('local markdown studio UI contract', () => {
     expect(gitignore).toContain('.env.studio.local');
     expect(existsSync(resolve(process.cwd(), 'src/pages/studio.astro'))).toBe(false);
     expect(existsSync(resolve(process.cwd(), 'src/pages/studio/index.astro'))).toBe(false);
+  });
+
+  test('invalidates an in-flight preview before the next debounce window', () => {
+    const main = read_source('studio/src/main.ts');
+    const schedule_start = main.indexOf('const schedule_preview');
+    const abort_position = main.indexOf('preview_controller?.abort()', schedule_start);
+    const timeout_position = main.indexOf('window.setTimeout', schedule_start);
+
+    expect(abort_position).toBeGreaterThan(schedule_start);
+    expect(timeout_position).toBeGreaterThan(abort_position);
+    expect(is_latest_preview(4, 3)).toBe(false);
   });
 });

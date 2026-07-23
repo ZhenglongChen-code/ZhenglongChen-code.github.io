@@ -1,5 +1,4 @@
 import './studio.css';
-import { is_latest_preview, next_tab_index } from './studio_logic';
 
 type article_metadata = {
   title: string;
@@ -20,6 +19,17 @@ type studio_asset = { source_path: string; object_key: string; public_url: strin
 type preview_request = { markdown: string; metadata: article_metadata };
 type preview_response = { preview_html: string; metadata: Partial<article_metadata>; unresolved_images: string[]; publish_configured?: boolean };
 type studio_draft = { markdown: string; metadata: article_metadata; image_urls: Record<string, string> };
+
+/** Returns the next roving-tab stop for horizontal arrow navigation. */
+export const next_tab_index = (current_index: number, key: string, tab_count: number): number => {
+  if (tab_count < 1 || (key !== 'ArrowLeft' && key !== 'ArrowRight')) return current_index;
+  return key === 'ArrowRight' ? (current_index + 1) % tab_count : (current_index - 1 + tab_count) % tab_count;
+};
+
+/** Ensures a delayed response cannot overwrite a newer preview. */
+export const is_latest_preview = (latest_sequence: number, response_sequence: number): boolean => latest_sequence === response_sequence;
+
+const initialize_studio = (): void => {
 
 const draft_key = 'latent_field_studio_draft_v1';
 const preview_delay_ms = 450;
@@ -132,19 +142,24 @@ const render_images = (images: string[]): void => {
   unresolved_sources = images;
   unresolved_images.replaceChildren();
   if (images.length === 0) { unresolved_images.textContent = 'No local image references detected.'; return; }
-  for (const filename of images) {
+  for (const source_path of images) {
     const row = document.createElement('div');
     row.className = 'image-item';
-    const label = document.createElement('strong'); label.textContent = filename;
-    const image_input = document.createElement('input'); image_input.type = 'file'; image_input.accept = 'image/*'; image_input.setAttribute('aria-label', `Select local image for ${filename}`);
-    const select_image = document.createElement('button'); select_image.type = 'button'; select_image.textContent = 'Select image'; select_image.setAttribute('aria-label', `Select local image for ${filename}`);
-    const selected = document.createElement('span'); selected.textContent = image_files.get(filename) ? `Selected file: ${image_files.get(filename)?.name}` : 'No local image selected.';
-    const url = document.createElement('input'); url.type = 'url'; url.value = image_urls[filename] ?? ''; url.placeholder = 'Final https:// image URL'; url.setAttribute('aria-label', `Final URL placeholder for ${filename}`);
+    row.dataset.sourcePath = source_path;
+    row.setAttribute('role', 'group');
+    row.setAttribute('aria-label', `Image pairing target for ${source_path}. Drop one image file here or use Select image.`);
+    const label = document.createElement('strong'); label.textContent = source_path;
+    const image_input = document.createElement('input'); image_input.type = 'file'; image_input.accept = 'image/*'; image_input.setAttribute('aria-label', `Select local image for ${source_path}`);
+    const select_image = document.createElement('button'); select_image.type = 'button'; select_image.textContent = 'Select image'; select_image.setAttribute('aria-label', `Select local image for ${source_path}`);
+    const selected = document.createElement('span'); selected.textContent = image_files.get(source_path) ? `Selected file: ${image_files.get(source_path)?.name}` : 'No local image selected.';
+    const url = document.createElement('input'); url.type = 'url'; url.value = image_urls[source_path] ?? ''; url.placeholder = 'Final https:// image URL'; url.setAttribute('aria-label', `Final URL placeholder for ${source_path}`);
     const final_url = document.createElement('span'); final_url.textContent = url.value ? `Final URL: ${url.value}` : 'Final URL placeholder — supplied after upload.';
-    const save_url = (): void => { image_urls = { ...image_urls, [filename]: url.value.trim() }; final_url.textContent = url.value ? `Final URL: ${url.value}` : 'Final URL placeholder — supplied after upload.'; persist_draft(); };
-    image_input.addEventListener('change', () => pair_image_file(filename, image_input.files?.[0]));
+    const save_url = (): void => { image_urls = { ...image_urls, [source_path]: url.value.trim() }; final_url.textContent = url.value ? `Final URL: ${url.value}` : 'Final URL placeholder — supplied after upload.'; persist_draft(); };
+    image_input.addEventListener('change', () => pair_image_file(source_path, image_input.files?.[0]));
     select_image.addEventListener('click', () => image_input.click());
     url.addEventListener('input', save_url);
+    row.addEventListener('dragover', (event) => { event.preventDefault(); event.stopPropagation(); });
+    row.addEventListener('drop', (event) => { event.preventDefault(); event.stopPropagation(); const image_file = [...(event.dataTransfer?.files ?? [])].find((file) => file.type.startsWith('image/')); if (!image_file) { announce(`Drop one image file for ${source_path}.`, true); return; } pair_image_file(source_path, image_file); announce(`${image_file.name} paired with ${source_path}.`); });
     row.append(label, image_input, select_image, selected, url, final_url); unresolved_images.append(row);
   }
 };
@@ -157,13 +172,13 @@ const update_publish_state = (configured: boolean): void => {
 };
 
 const request_preview = async (): Promise<void> => {
-  preview_controller?.abort();
-  preview_controller = new AbortController();
-  const request_sequence = ++preview_sequence;
+  const request_sequence = preview_sequence;
+  const request_controller = new AbortController();
+  preview_controller = request_controller;
   const request: preview_request = { markdown: source_input.value, metadata: read_metadata() };
   preview_marker.textContent = 'Rendering…';
   try {
-    const response = await fetch('/api/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request), signal: preview_controller.signal });
+    const response = await fetch('/api/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request), signal: request_controller.signal });
     if (!response.ok) throw new Error('Preview request failed.');
     const preview = await response.json() as preview_response;
     if (!is_latest_preview(preview_sequence, request_sequence)) return;
@@ -182,6 +197,9 @@ const request_preview = async (): Promise<void> => {
 };
 
 const schedule_preview = (): void => {
+  preview_sequence += 1;
+  preview_controller?.abort();
+  preview_controller = undefined;
   persist_draft();
   if (preview_timeout !== undefined) window.clearTimeout(preview_timeout);
   preview_timeout = window.setTimeout(() => { void request_preview(); }, preview_delay_ms);
@@ -234,3 +252,6 @@ restore_draft();
 update_publish_state(false);
 sync_workspace_mode();
 if (source_input.value) schedule_preview();
+};
+
+if (typeof document !== 'undefined') initialize_studio();
