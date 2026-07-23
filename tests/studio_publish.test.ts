@@ -117,6 +117,12 @@ describe('studio publication', () => {
     const result = await publish_article(request, publication_dependencies(root, { verify_versioning: async () => undefined, inspect_object: async () => undefined, upload_object: async () => ({ version_id: 'v1' }), delete_object: async () => undefined }));
     expect(result).toMatchObject({ kind: 'recovery_required', errors: [{ code: 'corrupt_journal' }] });
   });
+  it('rejects completed journals whose result commit SHA differs from the phase commit SHA', async () => {
+    const root = await journal_root(); const transactions = join(root, '.studio/transactions'); await mkdir(transactions, { recursive: true });
+    await writeFile(join(transactions, `${request.request_id}.json`), JSON.stringify({ protocol_version: 1, request_id: request.request_id, payload_hash: request_hash(), status: 'completed', phase: 'pushed', target_path: 'src/content/writing/post.md', owned: [], commit_sha: 'c'.repeat(40), result: { protocol_version: 1, kind: 'published', public_url: 'https://site.example/articles/post/', commit_sha: 'd'.repeat(40) } }));
+    const result = await publish_article(request, publication_dependencies(root, { verify_versioning: async () => undefined, inspect_object: async () => undefined, upload_object: async () => ({ version_id: 'v1' }), delete_object: async () => undefined }));
+    expect(result).toMatchObject({ kind: 'recovery_required', errors: [{ code: 'corrupt_journal' }] });
+  });
   it('retains pending ownership across journal write, rename, and fsync faults', async () => {
     for (const fault of ['before_write', 'before_file_sync', 'before_rename', 'before_directory_sync'] as const) {
       const root = await journal_root(); let uploads = 0; let deletes = 0; let events = 0;

@@ -223,7 +223,7 @@ describe('studio_images', () => {
     const published = await publish_prepared_images([image], adapter);
     expect(published.objects[0]).toMatchObject({ status: 'created', version_id: 'version-1' });
     await cleanup_created_images(published.objects, adapter);
-    expect(calls).toEqual(expect.arrayContaining([expect.objectContaining({ Headers: { 'If-None-Match': '*' } }), expect.objectContaining({ VersionId: 'version-1' })]));
+    expect(calls).toEqual(expect.arrayContaining([expect.objectContaining({ Headers: expect.objectContaining({ 'If-None-Match': '*', 'x-cos-meta-sha256': image.sha256 }) }), expect.objectContaining({ VersionId: 'version-1' })]));
   });
 
   it('writes and reads Studio request metadata with digest and exact version identity', async () => {
@@ -233,7 +233,7 @@ describe('studio_images', () => {
     const adapter = new tencent_cos_adapter({ secret_id: 'id', secret_key: 'key', region: 'ap-shanghai', bucket: 'bucket-1234567890', root_prefix: 'latent-field', public_base_url: 'https://cdn.example.com' }, () => client);
     await expect(adapter.inspect_object(image.object_key)).resolves.toEqual({ sha256: image.sha256, version_id: 'remote-v1', studio_request_id: request_id });
     await expect(adapter.upload_object(image, request_id)).resolves.toEqual({ version_id: 'created-v1' });
-    expect(calls).toEqual([expect.objectContaining({ Headers: expect.objectContaining({ 'If-None-Match': '*', 'x-cos-meta-studio-request-id': request_id }), 'x-cos-meta-sha256': image.sha256 })]);
+    expect(calls).toEqual([expect.objectContaining({ Headers: expect.objectContaining({ 'If-None-Match': '*', 'x-cos-meta-sha256': image.sha256, 'x-cos-meta-studio-request-id': request_id }) })]);
   });
 
   it('preserves the version-owned success ledger when a later upload has a network failure', async () => {

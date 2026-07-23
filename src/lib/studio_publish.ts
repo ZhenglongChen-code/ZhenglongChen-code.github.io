@@ -71,8 +71,8 @@ const is_journal = (value: unknown, expected_request_id?: string): value is jour
   if (value.phase === 'pre_commit') return value.commit_sha === undefined && (value.status !== 'completed' || value.result?.kind === 'failed') && (value.pending_upload === undefined || value.status === 'in_progress');
   if (value.phase === 'git_pending') return value.status === 'in_progress' && value.commit_sha === undefined && value.pending_upload === undefined;
   if (value.phase === 'ambiguous') return value.status === 'recovery_required' && value.commit_sha === undefined && value.pending_upload === undefined;
-  if (value.phase === 'committed') return value.commit_sha !== undefined && value.pending_upload === undefined && ((value.status === 'completed' && value.result?.kind === 'committed_local') || value.status === 'in_progress');
-  return value.commit_sha !== undefined && value.pending_upload === undefined && value.status === 'completed' && value.result?.kind === 'published';
+  if (value.phase === 'committed') return value.commit_sha !== undefined && value.pending_upload === undefined && ((value.status === 'completed' && value.result?.kind === 'committed_local' && value.result.commit_sha === value.commit_sha) || value.status === 'in_progress');
+  return value.commit_sha !== undefined && value.pending_upload === undefined && value.status === 'completed' && value.result?.kind === 'published' && value.result.commit_sha === value.commit_sha;
 };
 
 /** Reads and fully validates a journal before it can influence recovery decisions. */
@@ -380,7 +380,7 @@ export const publish_article = async (input: unknown, dependencies: studio_publi
     try { await write_journal(path, { ...committed, phase: 'pushed', status: 'completed', result }, dependencies.runtime); }
     catch { return { protocol_version: 1, kind: 'committed_local', commit_sha: git_result.commit_sha, recovery: 'Git succeeded but the pushed result was not journaled; retain resources and inspect the journal.' }; }
     return result;
-  } catch { return recovery('journal_failure', 'Publication journal is unavailable; no automatic cleanup was attempted.');
+  } catch (cause: unknown) { return recovery(cause instanceof Error && cause.message === 'corrupt journal' ? 'corrupt_journal' : 'journal_failure', 'Publication journal is unavailable; no automatic cleanup was attempted.');
   } finally {
     if (held_claim && path) await release_claim(claim_path(path), held_claim.token).catch(() => undefined);
     release_queue?.(); if (queues.get(queue_key) === tail) queues.delete(queue_key);
