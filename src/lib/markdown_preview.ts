@@ -39,6 +39,28 @@ const math_issue_field = (position: markdown_position | undefined): string => {
   return `markdown.line_${line}.column_${column}`;
 };
 
+/** Converts a text-node offset into its source line and column without exposing Markdown content. */
+const math_issue_field_at_offset = (position: markdown_position | undefined, source: string, offset: number): string => {
+  const line = position?.line;
+  const column = position?.column;
+  if (typeof line !== 'number' || typeof column !== 'number' || !Number.isInteger(line) || !Number.isInteger(column) || line < 1 || column < 1 || !Number.isInteger(offset) || offset < 0 || offset > source.length) return math_issue_field(position);
+  let located_line = line;
+  let located_column = column;
+  for (let index = 0; index < offset; index += 1) {
+    if (source[index] === '\r') {
+      if (source[index + 1] === '\n') index += 1;
+      located_line += 1;
+      located_column = 1;
+    } else if (source[index] === '\n') {
+      located_line += 1;
+      located_column = 1;
+    } else {
+      located_column += 1;
+    }
+  }
+  return math_issue_field({ line: located_line, column: located_column });
+};
+
 class math_render_error extends Error {
   readonly field: string;
 
@@ -182,12 +204,7 @@ const find_invalid_math_delimiter = (markdown: string): string | undefined => {
     }
     if (markdown_node.type === 'text' && source !== undefined && contains_unmatched_math_marker(source)) {
       const marker_offset = source.search(/(?<!\\)(?:\\\\)*\$/u);
-      const start_offset = markdown_node.position?.start?.offset;
-      const line = markdown_node.position?.start?.line;
-      const column = markdown_node.position?.start?.column;
-      invalid_field = typeof start_offset === 'number' && typeof line === 'number' && typeof column === 'number'
-        ? math_issue_field({ line, column: column + marker_offset })
-        : math_issue_field(markdown_node.position?.start);
+      invalid_field = math_issue_field_at_offset(markdown_node.position?.start, source, marker_offset);
       return;
     }
     if (Array.isArray(markdown_node.children)) {

@@ -52,6 +52,13 @@ describe('render_markdown_preview', () => {
     await expect(render_markdown_preview('`$x`\n\n```tex\n$$\\frac{1}{2}\n```')).resolves.toContain('<code');
   });
 
+  it('reports the correct line and column when an unmatched inline marker follows a text-node newline', async () => {
+    await expect(render_markdown_preview('first line\nsecond $')).rejects.toMatchObject({
+      name: 'studio_validation_error',
+      issues: [{ code: 'invalid_math', field: 'markdown.line_2.column_8', message: 'Markdown contains invalid LaTeX.' }],
+    });
+  });
+
   it('rejects executable raw HTML instead of silently removing it', async () => {
     await expect(render_markdown_preview('<img src=x onerror="alert(1)">')).rejects.toMatchObject({
       name: 'studio_validation_error',

@@ -194,6 +194,19 @@ describe('local Markdown Studio server', () => {
     expect(response.status).toBe(422);
   });
 
+  it('returns typed preview validation details without reflecting Markdown or parser messages', async () => {
+    const { base_url } = await start_server();
+    const markdown = 'first line\nsecond $';
+
+    const response = await request(base_url, '/api/preview', { method: 'POST', body: JSON.stringify({ markdown, metadata: valid_ui_metadata }), headers: { 'Content-Type': 'application/json' } });
+    const body = await response.json() as { error: string; errors?: Array<{ code: string; field?: string; message?: string }> };
+
+    expect(response.status).toBe(422);
+    expect(body).toEqual({ error: 'Preview is invalid.', errors: [{ code: 'invalid_math', field: 'markdown.line_2.column_8' }] });
+    expect(JSON.stringify(body)).not.toContain(markdown);
+    expect(JSON.stringify(body)).not.toContain('LaTeX');
+  });
+
   it('rejects body-only Markdown when completed browser metadata remains invalid', async () => {
     const { base_url } = await start_server();
 

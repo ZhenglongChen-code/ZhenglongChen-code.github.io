@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path';
 import { describe, expect, test } from 'vitest';
 import { render_markdown_preview } from '../src/lib/markdown_preview';
 import { discover_local_images, parse_studio_article } from '../src/lib/studio_article';
-import { feedback_should_focus, is_current_import, is_latest_preview, next_import_sequence, next_tab_index, normalize_article_metadata, publication_feedback, publication_intent_key, publication_request_for_intent, reconcile_image_pairs, safe_storage_get, safe_storage_remove, safe_storage_set } from '../studio/src/main';
+import { feedback_should_focus, is_current_import, is_latest_preview, next_import_sequence, next_tab_index, normalize_article_metadata, preview_feedback, publication_feedback, publication_intent_key, publication_request_for_intent, reconcile_image_pairs, safe_storage_get, safe_storage_remove, safe_storage_set } from '../studio/src/main';
 import { create_attention_map } from './fixtures/studio/create_attention_map';
 
 const read_source = (path: string): string => readFileSync(resolve(process.cwd(), path), 'utf8');
@@ -188,6 +188,10 @@ describe('local markdown studio UI contract', () => {
 
     expect(feedback_should_focus('preview_failure')).toBe(false);
     expect(feedback_should_focus('import')).toBe(true);
+    expect(preview_feedback([{ code: 'invalid_math', field: 'markdown.line_2.column_8' }])).toBe('LaTeX: correct the formula at line 2, column 8 and retry.');
+    expect(preview_feedback([{ code: 'invalid_math', field: '<script> secret formula' }])).not.toContain('secret');
+    expect(main).toContain('const preview_feedback');
+    expect(main).toContain("announce(preview_feedback(preview_error?.errors), 'preview_failure');");
     expect(main).toContain("announce('Preview unavailable. Your local draft remains intact.');");
   });
 

@@ -6,7 +6,7 @@ import { isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
 import { discover_local_images, parse_studio_article, parse_studio_article_source, serialize_studio_article, type studio_article_metadata } from '../src/lib/studio_article';
-import { render_markdown_preview } from '../src/lib/markdown_preview';
+import { render_markdown_preview, studio_validation_error, type studio_validation_issue } from '../src/lib/markdown_preview';
 import { tencent_cos_adapter } from '../src/lib/studio_images';
 import { local_git_adapter } from '../src/lib/studio_git';
 import { publish_article, type studio_publish_dependencies } from '../src/lib/studio_publish';
@@ -49,6 +49,7 @@ export type studio_configuration = {
 };
 
 type preview_response = { preview_html: string; metadata: ReturnType<typeof parse_studio_article>['metadata']; unresolved_images: string[]; publish_configured: boolean };
+type preview_validation_error_response = { error: 'Preview is invalid.'; errors?: Array<Pick<studio_validation_issue, 'code' | 'field'>> };
 type preview_service = (input: { markdown: string; slug: string; metadata?: unknown }) => Promise<Omit<preview_response, 'publish_configured'>>;
 type publish_service = (input: unknown) => Promise<studio_response>;
 type public_config = Pick<studio_configuration, 'repository_root' | 'publication_branch'>;
@@ -155,6 +156,16 @@ const safe_publish_response = (result: studio_response): studio_response => {
   if (result.kind !== 'failed' && result.kind !== 'recovery_required') return result;
   const errors = result.errors.map((error) => ({ code: error.code, ...(error.field === undefined ? {} : { field: error.field }), message: 'Publishing could not be completed safely.' }));
   return { protocol_version: 1, kind: result.kind, errors };
+};
+
+/** Retains only typed, UI-safe validation details from a local preview failure. */
+const safe_preview_validation_error = (cause: unknown): preview_validation_error_response => {
+  if (!(cause instanceof studio_validation_error)) return { error: 'Preview is invalid.' };
+  const errors = cause.issues.slice(0, 20).map((issue) => ({
+    code: issue.code,
+    ...(issue.field !== undefined && /^[A-Za-z][A-Za-z0-9_.[\]-]{0,99}$/.test(issue.field) ? { field: issue.field } : {}),
+  }));
+  return errors.length ? { error: 'Preview is invalid.', errors } : { error: 'Preview is invalid.' };
 };
 
 /** Reads one bounded request body and refuses it before JSON parsing when the limit is exceeded. */
@@ -311,7 +322,7 @@ export const create_studio_server = (options: studio_server_options = {}): studi
         const result = await preview({ markdown: input.markdown, slug: requested_slug || 'preview', metadata: input.metadata });
         send_json(response, 200, { ...result, metadata: { ...result.metadata, slug: requested_slug }, publish_configured: publish !== undefined });
       } catch (cause: unknown) {
-        send_json(response, cause instanceof Error && cause.message === 'body_too_large' ? 413 : 422, { error: 'Preview is invalid.' });
+        send_json(response, cause instanceof Error && cause.message === 'body_too_large' ? 413 : 422, safe_preview_validation_error(cause));
       }
       return;
     }

@@ -19,6 +19,7 @@ type article_metadata = {
 type studio_asset = { source_path: string; object_key: string; public_url: string };
 type preview_request = { markdown: string; metadata: article_metadata };
 type preview_response = { preview_html: string; metadata: Partial<article_metadata>; unresolved_images: string[]; publish_configured?: boolean };
+type preview_error = { error: string; errors?: Array<{ code: string; field?: string }> };
 type image_intent = 'photo' | 'screenshot' | 'diagram';
 type publish_error = { code: string; field?: string; message: string };
 type publish_result = { kind: 'published'; public_url: string; commit_sha: string } | { kind: 'committed_local'; commit_sha: string; recovery: string } | { kind: 'failed'; errors: publish_error[] } | { kind: 'recovery_required'; errors: publish_error[] };
@@ -94,6 +95,21 @@ export const publication_feedback = (result: Extract<publish_result, { kind: 'fa
     return 'Publication needs local review before retrying.';
   });
   return [...new Set(messages)].join(' ');
+};
+
+/** Maps server-whitelisted preview issue codes to fixed, actionable browser text. */
+export const preview_feedback = (errors: preview_error['errors']): string => {
+  const messages = (errors ?? []).flatMap((error) => {
+    if (error.code === 'invalid_math') {
+      const location = /^markdown\.line_([1-9]\d*)\.column_([1-9]\d*)$/.exec(error.field ?? '');
+      return [`LaTeX: correct the formula${location ? ` at line ${location[1]}, column ${location[2]}` : ' in the Markdown source'} and retry.`];
+    }
+    if (error.code === 'unsafe_html') return ['HTML safety: remove unsafe HTML or URLs before previewing.'];
+    if (error.code === 'invalid_frontmatter') return [`Frontmatter: correct ${error.field !== undefined && /^[A-Za-z][A-Za-z0-9_.[\]-]{0,99}$/.test(error.field) ? error.field : 'the metadata'} and retry.`];
+    if (error.code === 'invalid_slug') return ['Slug: use lowercase letters, digits, and hyphens.'];
+    return [];
+  });
+  return [...new Set(messages)].join(' ') || 'Preview unavailable. Your local draft remains intact.';
 };
 
 const initialize_studio = (): void => {
@@ -307,7 +323,13 @@ const request_preview = async (): Promise<void> => {
   preview_marker.textContent = 'Rendering…';
   try {
     const response = await fetch('/api/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request), signal: request_controller.signal });
-    if (!response.ok) throw new Error('Preview request failed.');
+    if (!response.ok) {
+      const preview_error = await response.json().catch(() => undefined) as preview_error | undefined;
+      if (!is_latest_preview(preview_sequence, request_sequence)) return;
+      preview_marker.textContent = 'Preview unavailable';
+      announce(preview_feedback(preview_error?.errors), 'preview_failure');
+      return;
+    }
     const preview = await response.json() as preview_response;
     if (!is_latest_preview(preview_sequence, request_sequence)) return;
     // server-sanitized preview HTML is assigned only to this dedicated preview container.
