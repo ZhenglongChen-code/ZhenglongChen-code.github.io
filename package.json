@@ -7,8 +7,9 @@
     "build": "npm run test && npm run check && npm run export:social && astro build && node scripts/check_site.mjs",
     "check": "astro check",
     "preview": "astro preview --host 0.0.0.0 --port 3002",
-    "test": "vitest run && npm run test:site-checker",
+    "test": "vitest run && npm run test:site-checker && npm run test:ops",
     "test:site-checker": "bash tests/site_checker.test.sh",
+    "test:ops": "bash tests/deploy.test.sh && bash tests/bootstrap_server.test.sh",
     "test:watch": "vitest",
     "export:social": "tsx scripts/export_social.ts"
   },
