@@ -43,4 +43,32 @@ describe('render_markdown_preview', () => {
       issues: [{ code: 'unsafe_html' }],
     });
   });
+
+  it('preserves complex KaTeX MathML and SVG output', async () => {
+    const html = await render_markdown_preview('$$\\sqrt{x}+\\overline{y}+\\underbrace{z}_{q}$$');
+
+    expect(html).toContain('<msqrt>');
+    expect(html).toContain('<mover');
+    expect(html).toContain('<munder');
+    expect(html).toContain('<svg');
+    expect(html).toContain('<path');
+  });
+
+  it('rejects bare unsafe HTML attributes and whitespace-obfuscated executable URLs', async () => {
+    await expect(render_markdown_preview('<img src=x onerror>')).rejects.toMatchObject({
+      name: 'studio_validation_error',
+      issues: [{ code: 'unsafe_html' }],
+    });
+    await expect(render_markdown_preview('<a href="java\tscript:alert(1)">x</a>')).rejects.toMatchObject({
+      name: 'studio_validation_error',
+      issues: [{ code: 'unsafe_html' }],
+    });
+  });
+
+  it('keeps tilde and longer indented backtick fences inert', async () => {
+    const html = await render_markdown_preview('   ~~~~html\n<img src=x onerror>\n   ~~~~\n\n   ````html\n<a href="javascript:alert(1)">x</a>\n   ````');
+
+    expect(html).toContain('&lt;img src=x onerror&gt;');
+    expect(html).toContain('&lt;a href="javascript:alert(1)"&gt;x&lt;/a&gt;');
+  });
 });

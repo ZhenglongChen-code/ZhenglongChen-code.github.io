@@ -32,23 +32,33 @@ export const markdown_processor_options = {
 const allowed_tags = [
   'a', 'article', 'blockquote', 'br', 'code', 'del', 'div', 'em', 'figcaption',
   'figure', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr', 'img', 'li', 'math', 'mi',
-  'mn', 'mo', 'mfrac', 'mrow', 'msub', 'msup', 'mtext', 'ol', 'p', 'pre', 'semantics',
-  'span', 'strong', 'sub', 'sup', 'table', 'tbody', 'td', 'th', 'thead', 'tr', 'ul',
-  'annotation',
+  'mn', 'mo', 'mfrac', 'mrow', 'msub', 'msubsup', 'msup', 'mtext', 'ol', 'p', 'path',
+  'pre', 'semantics', 'span', 'strong', 'sub', 'sup', 'svg', 'table', 'tbody', 'td',
+  'th', 'thead', 'tr', 'ul', 'annotation', 'mover', 'munder', 'munderover', 'mpadded',
+  'mphantom', 'mroot', 'mspace', 'msqrt', 'mstyle', 'mtable', 'mtd', 'mtr',
+];
+
+const katex_mathml_attributes = [
+  'accent', 'accentunder', 'columnalign', 'columnspacing', 'columnspan', 'displaystyle',
+  'encoding', 'fence', 'form', 'lspace', 'mathvariant', 'maxsize', 'minsize',
+  'movablelimits', 'notation', 'rspace', 'scriptlevel', 'separator', 'stretchy',
+  'symmetric', 'voffset', 'xmlns',
 ];
 
 const sanitize_options: sanitize_html.IOptions = {
   allowedTags: allowed_tags,
   allowedAttributes: {
-    '*': ['aria-hidden', 'class', 'encoding', 'stretchy', 'style', 'xmlns'],
+    '*': ['aria-hidden', 'class', 'style', ...katex_mathml_attributes],
     a: ['href', 'rel', 'target', 'title'],
     img: ['alt', 'height', 'loading', 'src', 'title', 'width'],
+    path: ['d'],
+    svg: ['height', 'preserveAspectRatio', 'viewBox', 'width', 'xmlns'],
   },
   allowedSchemes: ['http', 'https', 'mailto'],
   allowedSchemesByTag: { img: ['http', 'https'] },
 };
 
-const source_global_attributes = new Set(['aria-hidden', 'class', 'encoding', 'stretchy', 'xmlns']);
+const source_global_attributes = new Set(['aria-hidden', 'class', ...katex_mathml_attributes]);
 const source_tag_attributes: Record<string, Set<string>> = {
   a: new Set(['href', 'rel', 'target', 'title']),
   img: new Set(['alt', 'height', 'loading', 'src', 'title', 'width']),
@@ -62,9 +72,27 @@ const create_preview_processor = () => unified_processor()
   .use(rehype_katex)
   .use(rehype_stringify);
 
-const find_unsafe_html = (markdown: string): string | undefined => {
-  const prose = markdown.replace(/^\s*```[\s\S]*?^\s*```\s*$/gm, '');
-  for (const raw_tag of prose.matchAll(/<\s*([a-z][a-z0-9-]*)\b([^>]*)>/gi)) {
+type markdown_node = {
+  children?: unknown;
+  type?: unknown;
+  value?: unknown;
+};
+
+const collect_raw_html = (node: unknown, raw_html: string[]): void => {
+  if (typeof node !== 'object' || node === null) return;
+  const markdown_node = node as markdown_node;
+  if (markdown_node.type === 'html' && typeof markdown_node.value === 'string') raw_html.push(markdown_node.value);
+  if (Array.isArray(markdown_node.children)) {
+    for (const child of markdown_node.children) collect_raw_html(child, raw_html);
+  }
+};
+
+const remove_assigned_attributes = (attributes: string): string => (
+  attributes.replace(/\s[a-z][a-z0-9-]*\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+)/gi, ' ')
+);
+
+const find_unsafe_raw_html = (raw_html: string): string | undefined => {
+  for (const raw_tag of raw_html.matchAll(/<\s*([a-z][a-z0-9-]*)\b([^>]*)>/gi)) {
     const tag_name = raw_tag[1]?.toLowerCase();
     const attributes = raw_tag[2] ?? '';
     if (!tag_name || !allowed_tags.includes(tag_name)) return tag_name ?? 'unknown tag';
@@ -83,6 +111,18 @@ const find_unsafe_html = (markdown: string): string | undefined => {
         if (scheme && !allowed_schemes.includes(scheme)) return `${attribute_name} URL`;
       }
     }
+    const bare_attribute = remove_assigned_attributes(attributes).match(/\s([a-z][a-z0-9-]*)\b/i)?.[1]?.toLowerCase();
+    if (bare_attribute) return bare_attribute;
+  }
+  return undefined;
+};
+
+const find_unsafe_html = (markdown: string): string | undefined => {
+  const raw_html: string[] = [];
+  collect_raw_html(unified_processor().use(remark_parse).parse(markdown), raw_html);
+  for (const raw_html_node of raw_html) {
+    const unsafe_html = find_unsafe_raw_html(raw_html_node);
+    if (unsafe_html) return unsafe_html;
   }
   return undefined;
 };
