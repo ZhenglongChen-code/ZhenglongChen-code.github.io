@@ -223,4 +223,19 @@ describe('studio_images', () => {
     await cleanup_created_images(published.objects, adapter);
     expect(calls).toEqual(expect.arrayContaining([expect.objectContaining({ Headers: { 'If-None-Match': '*' } }), expect.objectContaining({ VersionId: 'version-1' })]));
   });
+
+  it('preserves the version-owned success ledger when a later upload has a network failure', async () => {
+    const images = (await prepare_article_images([
+      { source_path: 'a.png', bytes: await png_bytes(), claimed_content_type: 'image/png', intent: 'diagram', semantic_name: 'a' },
+      { source_path: 'b.png', bytes: await png_bytes(), claimed_content_type: 'image/png', intent: 'diagram', semantic_name: 'b' },
+    ], { root_prefix: 'latent-field', public_base_url: 'https://cdn.example.com', year: 2026, slug: 'vlm-evaluation', max_bytes: 1_000_000, max_pixels: 1_000_000, max_width: 100, max_height: 100 })).images;
+    let upload_count = 0;
+    const adapter: cos_adapter = {
+      verify_versioning: async () => {},
+      inspect_object: async () => undefined,
+      upload_object: async () => { upload_count += 1; if (upload_count === 2) throw new Error('network down'); return { version_id: 'version-a' }; },
+      delete_object: async () => {},
+    };
+    await expect(publish_prepared_images(images, adapter)).rejects.toMatchObject({ name: 'studio_image_publish_error', successful_objects: [expect.objectContaining({ status: 'created', version_id: 'version-a' })], cause_error: expect.objectContaining({ message: 'network down' }) });
+  });
 });

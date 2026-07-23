@@ -15,7 +15,7 @@ export type published_image = prepared_image & ({ status: 'created'; version_id:
 export type publish_result = { objects: published_image[]; manifest: image_manifest_entry[] };
 export type cleanup_result = { deleted: string[]; failures: string[] };
 export class studio_image_error extends Error { constructor(readonly code: 'validation' | 'collision' | 'missing_remote_digest' | 'untracked_create', message: string) { super(message); this.name = 'studio_image_error'; } }
-export class studio_image_publish_error extends Error { constructor(readonly code: 'collision' | 'untracked_create', readonly successful_objects: readonly published_image[], message: string) { super(message); this.name = 'studio_image_publish_error'; this.successful_objects = Object.freeze([...successful_objects]); } }
+export class studio_image_publish_error extends Error { constructor(readonly code: 'collision' | 'untracked_create' | 'adapter_failure', readonly successful_objects: readonly published_image[], message: string, readonly cause_error?: unknown) { super(message); this.name = 'studio_image_publish_error'; this.successful_objects = Object.freeze([...successful_objects]); } }
 
 type key_input = { root_prefix: string; year: number; slug: string; figure_number: number; semantic_name: string; extension: string };
 type markdown_node = { type?: unknown; url?: unknown; identifier?: unknown; children?: unknown; position?: { start: { offset?: number }; end: { offset?: number } } };
@@ -143,8 +143,9 @@ export const rewrite_markdown_images = (markdown: string, urls: ReadonlyMap<stri
 /** Uploads only absent objects, allowing exact-digest idempotent reuse. */
 export const publish_prepared_images = async (images: readonly prepared_image[], adapter: cos_adapter): Promise<publish_result> => {
   const objects: published_image[] = [];
-  await adapter.verify_versioning();
-  for (const image of images) {
+  try {
+    await adapter.verify_versioning();
+    for (const image of images) {
     const owned_bytes = new Uint8Array(image.bytes); const owned_digest = sha256(owned_bytes);
     if (owned_digest !== image.sha256) throw new studio_image_publish_error('untracked_create', objects, `Prepared image bytes changed: ${image.object_key}`);
     const owned_image = { ...image, bytes: owned_bytes };
@@ -163,8 +164,13 @@ export const publish_prepared_images = async (images: readonly prepared_image[],
       if (raced?.sha256 === image.sha256) objects.push({ ...owned_image, status: 'reused' });
       else throw new studio_image_publish_error('collision', objects, `Object collision: ${image.object_key}`);
     }
+    }
+    return { objects, manifest: objects.map(({ source_path, object_key, public_url }) => ({ source_path, object_key, public_url })) };
+  } catch (error: unknown) {
+    if (error instanceof studio_image_publish_error) throw error;
+    const message = error instanceof Error ? error.message : 'Image publication adapter failure.';
+    throw new studio_image_publish_error('adapter_failure', objects, message, error);
   }
-  return { objects, manifest: objects.map(({ source_path, object_key, public_url }) => ({ source_path, object_key, public_url })) };
 };
 
 /** Deletes only objects created during the current request and reports all best-effort failures. */
