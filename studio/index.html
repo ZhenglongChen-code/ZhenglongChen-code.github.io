@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f3efe6" />
+    <title>LATENT FIELD — Studio</title>
+    <script type="module" src="/src/main.ts"></script>
+  </head>
+  <body>
+    <main class="studio-shell">
+      <header class="folio" aria-label="Latent Field Studio">
+        <a class="wordmark" href="/" aria-label="Latent Field public site">LATENT<br />FIELD</a>
+        <p class="folio-label">LOCAL MARKDOWN STUDIO <span aria-hidden="true">/</span> 01</p>
+        <p class="folio-state" id="publish-configuration">Preview only — publishing is not configured.</p>
+      </header>
+
+      <div class="studio-grid">
+        <aside class="metadata-rail" aria-labelledby="metadata-heading">
+          <div class="rail-heading">
+            <p class="eyebrow">Article record</p>
+            <h1 id="metadata-heading">Editorial<br />matter</h1>
+          </div>
+          <form id="metadata-form" class="metadata-form">
+            <label for="article-slug">English slug<input id="article-slug" name="slug" autocomplete="off" pattern="[a-z0-9]+(?:-[a-z0-9]+)*" /></label>
+            <label for="article-title">Title<input id="article-title" name="title" /></label>
+            <label for="article-description">Description<textarea id="article-description" name="description" rows="3"></textarea></label>
+            <div class="field-pair">
+              <label for="article-date">Date<input id="article-date" name="date" type="date" /></label>
+              <label for="article-updated">Updated<input id="article-updated" name="updated" type="date" /></label>
+            </div>
+            <label for="article-tags">Tags<input id="article-tags" name="tags" placeholder="vision, research" /></label>
+            <div class="field-pair">
+              <label for="article-language">Language<select id="article-language" name="language"><option value="zh">Chinese</option><option value="en">English</option></select></label>
+              <label for="article-translation">Translation<input id="article-translation" name="translation" /></label>
+            </div>
+            <fieldset class="checks"><legend>Article flags</legend><label><input id="article-featured" name="featured" type="checkbox" /> Featured</label><label><input id="article-draft" name="draft" type="checkbox" /> Draft</label></fieldset>
+            <label for="article-assets">Assets<input id="article-assets" name="assets" readonly placeholder="Managed by image pairing" /></label>
+            <fieldset class="checks"><legend>Social export</legend><label><input id="article-zhihu" name="zhihu" type="checkbox" /> Zhihu</label><label><input id="article-wechat" name="wechat" type="checkbox" /> WeChat</label><label><input id="article-xiaohongshu" name="xiaohongshu" type="checkbox" /> Xiaohongshu</label></fieldset>
+          </form>
+          <section class="image-pairing" aria-labelledby="image-heading">
+            <p class="eyebrow" id="image-heading">Unresolved images</p>
+            <div id="unresolved-images" class="unresolved-images" aria-live="polite"><p>No local image references detected.</p></div>
+          </section>
+        </aside>
+
+        <section class="workbench" aria-label="Markdown workbench">
+          <div class="workbench-topline">
+            <label class="import-control" for="markdown-file">Import .md<input id="markdown-file" type="file" accept=".md,text/markdown,text/plain" aria-label="Import Markdown file" /></label>
+            <p id="import-feedback" class="quiet-feedback" tabindex="-1">Drop a Markdown file anywhere in this workspace.</p>
+            <div class="view-tabs" role="tablist" aria-label="Mobile workspace view">
+              <button id="editor-tab" type="button" role="tab" aria-selected="true" aria-controls="editor-panel">Editor</button>
+              <button id="preview-tab" type="button" role="tab" aria-selected="false" aria-controls="preview-panel" tabindex="-1">Preview</button>
+            </div>
+          </div>
+          <div id="drop-zone" class="workspace-panels">
+            <section id="editor-panel" class="editor-panel" role="tabpanel" aria-labelledby="editor-tab">
+              <label class="source-label" for="markdown-source">Markdown source</label>
+              <textarea id="markdown-source" aria-label="Markdown source" spellcheck="true" placeholder="Paste or write an article in Markdown…"></textarea>
+            </section>
+            <section id="preview-panel" class="preview-panel" role="tabpanel" aria-labelledby="preview-tab" hidden>
+              <div class="preview-label"><span>Rendered proof</span><span id="preview-marker">Awaiting source</span></div>
+              <div id="markdown-preview" class="markdown-preview" tabindex="-1"><p>Your sanitized article preview will appear here.</p></div>
+            </section>
+          </div>
+          <footer class="studio-actions">
+            <p id="studio-status" class="status-message" aria-live="polite" tabindex="-1">Local draft ready. Preview requests stay on this machine.</p>
+            <div class="publish-actions">
+              <button id="publish-new" type="button" disabled aria-describedby="publish-configuration">Publish new article</button>
+              <button id="publish-update" type="button" disabled aria-describedby="publish-configuration">Update existing article</button>
+            </div>
+          </footer>
+        </section>
+      </div>
+    </main>
+  </body>
+</html>

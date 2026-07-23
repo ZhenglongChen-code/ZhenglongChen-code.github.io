@@ -11,7 +11,9 @@
     "test:site-checker": "bash tests/site_checker.test.sh",
     "test:ops": "bash tests/deploy.test.sh && bash tests/bootstrap_server.test.sh",
     "test:watch": "vitest",
-    "export:social": "tsx scripts/export_social.ts"
+    "export:social": "tsx scripts/export_social.ts",
+    "studio:build": "vite build --config studio/vite.config.ts",
+    "studio:ui": "vite --config studio/vite.config.ts --host 127.0.0.1 --port 4317"
   },
   "dependencies": {
     "@astrojs/markdown-remark": "^7.2.1",
@@ -31,6 +33,7 @@
     "@types/sanitize-html": "^2.16.1",
     "tsx": "^4.23.1",
     "typescript": "^6.0.3",
+    "vite": "^8.1.5",
     "vitest": "^4.1.10"
   }
 }

@@ -1,5 +1,8 @@
 node_modules/
 dist/
+studio/dist/
+.studio/
+.env.studio.local
 .astro/
 .social_exports-stage-*/
 .social_exports-backup-*/
