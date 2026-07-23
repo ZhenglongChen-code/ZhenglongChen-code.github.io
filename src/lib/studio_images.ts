@@ -30,14 +30,15 @@ const root_prefix = (value: string): string => {
   return value;
 };
 const decoded_path_segment = (value: string): string | undefined => { try { const decoded = decodeURIComponent(value); return /%(?:[0-9a-f]{2})/i.test(decoded) ? undefined : decoded; } catch { return undefined; } };
+const encode_path_segment = (value: string): string => encodeURIComponent(value).replace(/[!'()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
 const public_url = (base: string, object_key: string): string => {
   let parsed: URL;
   try { parsed = new URL(base); } catch { return invalid('Invalid public base URL.'); }
   const raw_path = base.replace(/^https:\/\/[^/]+/, '');
   const decoded_segments = raw_path.split('/').map(decoded_path_segment);
   if (base.trim() !== base || /[\x00-\x1f\x7f-\x9f]/.test(base) || base.includes('\\') || /%(?:2f|5c|2e)/i.test(base) || decoded_segments.some((segment) => segment === undefined || /[\x00-\x1f\x7f-\x9f]/.test(segment)) || parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.search || parsed.hash || /\/(?:\.{1,2})(?:\/|$)/.test(raw_path) || raw_path.includes('//')) invalid('Invalid public base URL.');
-  const base_path = decoded_segments.filter((segment) => segment !== '').map((segment) => encodeURIComponent(segment!)).join('/');
-  return `${parsed.origin}${base_path ? `/${base_path}` : ''}/${object_key.split('/').map(encodeURIComponent).join('/')}`;
+  const base_path = decoded_segments.filter((segment) => segment !== '').map((segment) => encode_path_segment(segment!)).join('/');
+  return `${parsed.origin}${base_path ? `/${base_path}` : ''}/${object_key.split('/').map(encode_path_segment).join('/')}`;
 };
 const valid_source_path = (source_path: string): boolean => {
   if (!source_path || /[\\\x00-\x1f\x7f\s]/.test(source_path) || /[^\x00-\x7f]/.test(source_path) || /[?#]/.test(source_path) || source_path.startsWith('/') || source_path.startsWith('//') || /^[a-z][a-z0-9+.-]*:/i.test(source_path)) return false;

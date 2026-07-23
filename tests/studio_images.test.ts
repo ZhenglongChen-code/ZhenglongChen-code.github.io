@@ -241,11 +241,12 @@ describe('studio_images', () => {
     await expect(publish_prepared_images(images, adapter)).rejects.toMatchObject({ name: 'studio_image_publish_error', successful_objects: [expect.objectContaining({ status: 'created', version_id: 'version-a' })], cause_error: expect.objectContaining({ message: 'network down' }) });
   });
 
-  it('encodes public-base path delimiters before Markdown rewrite', () => {
-    const rewritten = rewrite_markdown_images('![x](x.png)', new Map([['x.png', 'https://cdn.example.com/a%29b/latent-field/articles/2026/vlm-evaluation/fig-01-x.webp']]));
+  it('encodes public-base path delimiters before Markdown rewrite', async () => {
+    const prepared = await prepare_article_images([{ source_path: 'x.png', bytes: await png_bytes(), claimed_content_type: 'image/png', intent: 'diagram', semantic_name: 'x' }], { root_prefix: 'latent-field', public_base_url: 'https://cdn.example.com/a)b', year: 2026, slug: 'vlm-evaluation', max_bytes: 1_000_000, max_pixels: 1_000_000, max_width: 100, max_height: 100 });
+    const rewritten = rewrite_markdown_images('![x](x.png)', new Map([['x.png', prepared.images[0]!.public_url]]));
     const tree = unified_processor().use(remark_parse).parse(rewritten) as { children: Array<{ children?: Array<{ url?: string }> }> };
-    expect(rewritten).toBe('![x](https://cdn.example.com/a%29b/latent-field/articles/2026/vlm-evaluation/fig-01-x.webp)');
-    expect(tree.children[0]!.children![0]!.url).toBe('https://cdn.example.com/a%29b/latent-field/articles/2026/vlm-evaluation/fig-01-x.webp');
+    expect(rewritten).toBe('![x](https://cdn.example.com/a%29b/latent-field/articles/2026/vlm-evaluation/fig-01-x.png)');
+    expect(tree.children[0]!.children![0]!.url).toBe('https://cdn.example.com/a%29b/latent-field/articles/2026/vlm-evaluation/fig-01-x.png');
   });
 
   it('rejects invalid manifest keys before source processing', async () => {
