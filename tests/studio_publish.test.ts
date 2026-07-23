@@ -251,7 +251,7 @@ describe('studio publication', () => {
     let uploads = 0; let inspections = 0;
     const invalid_math = { ...request, markdown: '---\ntitle: Post\ndescription: Description\ndate: 2026-01-02\n---\n\n$\\frac{1}{$\n', images: [] };
     const result = await publish_article(invalid_math, publication_dependencies(await journal_root(), { verify_versioning: async () => undefined, inspect_object: async () => { inspections += 1; return undefined; }, upload_object: async () => { uploads += 1; return { version_id: 'v1' }; }, delete_object: async () => undefined }));
-    expect(result).toMatchObject({ kind: 'failed', errors: [{ code: 'invalid_math', field: 'markdown' }] }); expect(uploads).toBe(0); expect(inspections).toBe(0);
+    expect(result).toMatchObject({ kind: 'failed', errors: [{ code: 'invalid_math', field: 'markdown.line_2.column_1' }] }); expect(uploads).toBe(0); expect(inspections).toBe(0);
   });
   it('reuses a matching foreign object and never records or deletes it as owned', async () => {
     let uploads = 0; let deletes = 0; const result = await publish_article(request, { ...publication_dependencies(await journal_root(), { verify_versioning: async () => undefined, inspect_object: async () => ({ sha256: prepared.sha256, version_id: 'foreign-v1', studio_request_id: '1'.repeat(32) }), upload_object: async () => { uploads += 1; return { version_id: 'v1' }; }, delete_object: async () => { deletes += 1; } }), git: with_baseline({ publish: async () => ({ ok: false as const, code: 'stale_source' as const, message: 'changed' }) }) });
