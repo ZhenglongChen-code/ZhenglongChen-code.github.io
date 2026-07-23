@@ -23,9 +23,9 @@ export type git_publish_input = {
 };
 
 export type git_publish_failure_code = 'validation' | 'unsafe_path' | 'article_exists' | 'article_missing' | 'stale_source' | 'target_dirty' | 'repository_busy' | 'wrong_branch' | 'integrity_failed' | 'critical_recovery_failed' | 'git_failed';
-export type git_publish_failure = { ok: false; code: git_publish_failure_code; message: string };
-export type git_push_failed = { ok: false; code: 'push_failed'; message: string; commit_sha: string; committed_paths: string[]; recovery: string };
-export type git_publish_success = { ok: true; path: string; commit_sha: string; push_status: 'pushed' };
+export type git_publish_failure = { ok: false; code: git_publish_failure_code; message: string; commit_retained?: false };
+export type git_push_failed = { ok: false; code: 'push_failed'; message: string; commit_retained: true; commit_sha: string; committed_paths: string[]; recovery: string };
+export type git_publish_success = { ok: true; path: string; commit_retained?: true; commit_sha: string; push_status: 'pushed' };
 export type git_publish_result = git_publish_failure | git_push_failed | git_publish_success;
 
 export interface git_adapter { publish(input: git_publish_input): Promise<git_publish_result>; }
@@ -130,10 +130,10 @@ export class local_git_adapter implements git_adapter {
         const remote_ref = `refs/heads/${this.publication_branch}`;
         await this.run_git('push', this.remote_name, `${commit_sha}:${remote_ref}`);
         const remote_sha = (await this.run_git('ls-remote', this.remote_name, remote_ref)).split(/\s+/)[0];
-        if (remote_sha !== commit_sha) return { ok: false, code: 'push_failed', message: 'Remote did not confirm the verified article commit.', commit_sha, committed_paths: [relative_path], recovery: 'Inspect the remote branch before retrying; do not force-push.' };
-        return { ok: true, path: relative_path, commit_sha, push_status: 'pushed' };
+        if (remote_sha !== commit_sha) return { ok: false, code: 'push_failed', message: 'Remote did not confirm the verified article commit.', commit_retained: true, commit_sha, committed_paths: [relative_path], recovery: 'Inspect the remote branch before retrying; do not force-push.' };
+        return { ok: true, path: relative_path, commit_retained: true, commit_sha, push_status: 'pushed' };
       }
-      catch { return { ok: false, code: 'push_failed', message: 'Push failed after the local article commit was created.', commit_sha, committed_paths: [relative_path], recovery: 'Local commit was kept. Fetch the remote branch, resolve divergence, then push normally without force.' }; }
+      catch { return { ok: false, code: 'push_failed', message: 'Push failed after the local article commit was created.', commit_retained: true, commit_sha, committed_paths: [relative_path], recovery: 'Local commit was kept. Fetch the remote branch, resolve divergence, then push normally without force.' }; }
     } catch { return { ok: false, code: 'git_failed', message: 'Git publication failed; inspect the local repository state and retry.' }; }
   }
 

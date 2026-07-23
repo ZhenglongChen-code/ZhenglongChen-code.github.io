@@ -143,7 +143,7 @@ export const rewrite_markdown_images = (markdown: string, urls: ReadonlyMap<stri
 };
 
 /** Uploads only absent objects, allowing exact-digest idempotent reuse. */
-export const publish_prepared_images = async (images: readonly prepared_image[], adapter: cos_adapter): Promise<publish_result> => {
+export const publish_prepared_images = async (images: readonly prepared_image[], adapter: cos_adapter, on_created?: (image: published_image) => Promise<void>): Promise<publish_result> => {
   const objects: published_image[] = [];
   const snapshots = images.map((image) => {
     const bytes = new Uint8Array(image.bytes); const digest = sha256(bytes);
@@ -160,7 +160,7 @@ export const publish_prepared_images = async (images: readonly prepared_image[],
     try {
       const created = await adapter.upload_object(owned_image);
       if (!created.version_id) throw new studio_image_publish_error('untracked_create', objects, `Created object lacks a version token: ${image.object_key}`);
-      objects.push({ ...owned_image, status: 'created', version_id: created.version_id });
+      const created_image: published_image = { ...owned_image, status: 'created', version_id: created.version_id }; objects.push(created_image); await on_created?.(created_image);
     } catch (error: unknown) {
       if (error instanceof studio_image_publish_error) throw error;
       const precondition_failed = typeof error === 'object' && error !== null && 'statusCode' in error && (error as { statusCode?: unknown }).statusCode === 412;
