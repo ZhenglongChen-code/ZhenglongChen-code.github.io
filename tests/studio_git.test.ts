@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { execFile as exec_file } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile, chmod, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
@@ -33,6 +33,14 @@ const make_repository = async (): Promise<{ root: string; remote: string; adapte
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
 
 describe('local_git_adapter', () => {
+  it('preserves article modes despite restrictive umask', async () => {
+    const { root, adapter } = await make_repository(); const original_umask = process.umask(0o077);
+    try {
+      const existing = join(root, 'src/content/writing/mode.md'); await writeFile(existing, 'old'); await chmod(existing, 0o664); await git(root, 'add', '--', 'src/content/writing/mode.md'); await git(root, 'commit', '-m', 'mode');
+      await expect(adapter.publish({ operation: 'publish_update', slug: 'mode', source: new Uint8Array([110, 101, 119]), expected_source_hash: sha256(await readFile(existing)), commit_message: 'Update mode' })).resolves.toMatchObject({ ok: true }); expect((await stat(existing)).mode & 0o777).toBe(0o664);
+      await expect(adapter.publish({ operation: 'publish_new', slug: 'new-mode', source: new Uint8Array([110]), commit_message: 'New mode' })).resolves.toMatchObject({ ok: true }); expect((await stat(join(root, 'src/content/writing/new-mode.md'))).mode & 0o777).toBe(0o644);
+    } finally { process.umask(original_umask); }
+  });
   it('rejects unknown operations before mutating repository state', async () => {
     const { root, adapter } = await make_repository(); const before = await git(root, 'rev-parse', 'HEAD');
     await expect(adapter.publish({ operation: 'unknown' as unknown as 'publish_new', slug: 'bad', source: new Uint8Array([1]), commit_message: 'Bad operation' })).resolves.toMatchObject({ ok: false, code: 'validation' });

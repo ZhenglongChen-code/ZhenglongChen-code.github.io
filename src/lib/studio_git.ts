@@ -165,6 +165,7 @@ export class local_git_adapter implements git_adapter {
     let handle: Awaited<ReturnType<typeof open>> | undefined;
     try {
       handle = await open(temporary, 'wx', existing_mode === undefined ? 0o644 : existing_mode & 0o777);
+      await handle.chmod(existing_mode === undefined ? 0o644 : existing_mode & 0o777);
       await handle.writeFile(source); await handle.sync(); await handle.close(); handle = undefined;
       const final_stat = await lstat(identity.path); if (final_stat.isSymbolicLink() || final_stat.dev !== identity.dev || final_stat.ino !== identity.ino) throw new Error('Writing directory changed.');
       await rename(temporary, target);
