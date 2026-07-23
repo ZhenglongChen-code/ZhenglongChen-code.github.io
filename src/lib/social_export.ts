@@ -144,7 +144,8 @@ export function format_wechat_html(article: social_article): string {
     throw new TypeError('Article Markdown must be a string.');
   }
 
-  const parsed_markdown = marked.parse(article.markdown);
+  const markdown_with_source = `${article.markdown}\n\n原文：${article.canonical_url}`;
+  const parsed_markdown = marked.parse(markdown_with_source);
   if (typeof parsed_markdown !== 'string') {
     throw new TypeError('Markdown parsing must return a string.');
   }

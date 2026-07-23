@@ -10,7 +10,7 @@ const article: social_article = {
   title: '为长期写作建一个自己的家',
   description: '为什么我选择把个人网站作为内容源头，再把文章带到不同平台。',
   tags: ['写作', '独立网站'],
-  canonical_url: 'http://106.14.173.234/writing/building-a-writing-home',
+  canonical_url: 'http://106.14.173.234/articles/building-a-writing-home',
   markdown: '# 起点\n\n这是正文。',
 };
 
@@ -20,14 +20,14 @@ describe('social article formatters', () => {
       title: '为长期写作建一个自己的家',
       description: '为什么我选择把个人网站作为内容源头，再把文章带到不同平台。',
       tags: ['写作', '独立网站'],
-      canonical_url: 'http://106.14.173.234/writing/building-a-writing-home',
+      canonical_url: 'http://106.14.173.234/articles/building-a-writing-home',
       markdown: '# 起点\n\n这是正文。',
     });
   });
 
   it('appends the canonical source to the original Markdown for Zhihu', () => {
     expect(format_zhihu(article)).toBe(
-      '# 起点\n\n这是正文。\n\n---\n\n原文：http://106.14.173.234/writing/building-a-writing-home\n',
+      '# 起点\n\n这是正文。\n\n---\n\n原文：http://106.14.173.234/articles/building-a-writing-home\n',
     );
   });
 
@@ -42,7 +42,7 @@ describe('social article formatters', () => {
 
     expect(output.startsWith(original_markdown)).toBe(true);
     expect(output).toBe(
-      `${original_markdown}\n\n---\n\n原文：http://106.14.173.234/writing/building-a-writing-home\n`,
+      `${original_markdown}\n\n---\n\n原文：http://106.14.173.234/articles/building-a-writing-home\n`,
     );
   });
 
@@ -53,6 +53,28 @@ describe('social article formatters', () => {
     expect(output).toContain('<h1 style=');
     expect(output).not.toContain('<script');
     expect(output).not.toContain('<link');
+  });
+
+  it('preserves LaTeX source across manual social formats without unsafe WeChat markup', () => {
+    const math_article: social_article = {
+      ...article,
+      markdown: '行内公式 $p(y \\mid x)$。\n\n$$E = mc^2$$',
+    };
+
+    const zhihu_output = format_zhihu(math_article);
+    const wechat_output = format_wechat_html(math_article);
+    const xiaohongshu_output = format_xiaohongshu(math_article);
+
+    expect(zhihu_output).toContain('$p(y \\mid x)$');
+    expect(zhihu_output).toContain('$$E = mc^2$$');
+    expect(wechat_output).toContain('$p(y \\mid x)$');
+    expect(wechat_output).toContain('$$E = mc^2$$');
+    expect(wechat_output).toContain('http://106.14.173.234/articles/building-a-writing-home');
+    expect(wechat_output).not.toMatch(/<(script|style|link|iframe|object|embed)\b/i);
+    expect(xiaohongshu_output).toContain('p(y \\mid x)');
+    expect(xiaohongshu_output).toContain('E = mc^2');
+    expect(Array.from(xiaohongshu_output).length).toBeLessThanOrEqual(1000);
+    expect(zhihu_output).toContain('http://106.14.173.234/articles/building-a-writing-home');
   });
 
   it('removes unsafe raw HTML, event handlers, and JavaScript URLs from WeChat HTML', () => {

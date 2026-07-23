@@ -113,6 +113,43 @@ describe('export_social_articles', () => {
     expect(await read_export_tree(project_root)).toEqual(first_tree);
   });
 
+  it('exports Chinese formulas for every enabled platform while excluding draft, English, and disabled copies', async () => {
+    const project_root = await create_temporary_project();
+    const enabled_frontmatter = [
+      'title: 数学导出',
+      'description: 保留公式源代码。',
+      'tags: [数学]',
+      'language: zh',
+      'draft: false',
+    ].join('\n');
+    const math_markdown = '行内 $p(y \\mid x)$。\n\n$$E = mc^2$$';
+
+    await write_article(project_root, 'math-export', enabled_frontmatter, math_markdown);
+    await write_article(project_root, 'math-draft', enabled_frontmatter.replace('draft: false', 'draft: true'), math_markdown);
+    await write_article(project_root, 'math-english', enabled_frontmatter.replace('language: zh', 'language: en'), math_markdown);
+    await write_article(project_root, 'math-disabled', `${enabled_frontmatter}\nsocial:\n  zhihu: false\n  wechat: false\n  xiaohongshu: false`, math_markdown);
+
+    const result = await export_social_articles({
+      project_root,
+      site_url: 'https://example.test',
+    });
+    const export_tree = await read_export_tree(project_root);
+    const xiaohongshu_output = export_tree['math-export/xiaohongshu.md'] ?? '';
+
+    expect(result).toEqual([{ slug: 'math-export', platforms: ['zhihu', 'wechat', 'xiaohongshu'] }]);
+    expect(export_tree['math-export/zhihu.md']).toContain('$p(y \\mid x)$');
+    expect(export_tree['math-export/zhihu.md']).toContain('$$E = mc^2$$');
+    expect(export_tree['math-export/wechat.html']).toContain('$p(y \\mid x)$');
+    expect(export_tree['math-export/wechat.html']).toContain('$$E = mc^2$$');
+    expect(xiaohongshu_output).toContain('p(y \\mid x)');
+    expect(xiaohongshu_output).toContain('E = mc^2');
+    expect(Array.from(xiaohongshu_output).length).toBeLessThanOrEqual(1000);
+    expect(Object.values(export_tree).every((content) => content.includes('https://example.test/articles/math-export'))).toBe(true);
+    expect(Object.keys(export_tree).some((path) => path.startsWith('math-draft/'))).toBe(false);
+    expect(Object.keys(export_tree).some((path) => path.startsWith('math-english/'))).toBe(false);
+    expect(Object.keys(export_tree).some((path) => path.startsWith('math-disabled/'))).toBe(false);
+  });
+
   it('rejects malformed SITE_URL input before creating an output directory', async () => {
     const project_root = await create_temporary_project();
     await write_article(project_root, 'valid', [
