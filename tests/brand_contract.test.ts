@@ -1,10 +1,10 @@
-import { readFile } from 'node:fs/promises';
+import { readFile as read_file } from 'node:fs/promises';
 import { describe, expect, test } from 'vitest';
 
 const project_root = new URL('..', import.meta.url);
 
 async function read_source_file(relative_path: string): Promise<string> {
-  return readFile(new URL(relative_path, project_root), 'utf8');
+  return read_file(new URL(relative_path, project_root), 'utf8');
 }
 
 describe('Latent Field brand contract', () => {
@@ -14,6 +14,7 @@ describe('Latent Field brand contract', () => {
       read_source_file('src/pages/index.astro'),
     ]);
 
+    expect(header_source).toContain('aria-label="Latent Field, research notes by Zhenglong Chen, return home"');
     expect(header_source).toContain('LATENT FIELD');
     expect(header_source).toContain('ZHENGLONG CHEN · RESEARCH NOTES');
     expect(home_source).toContain('Zhenglong Chen');
@@ -38,5 +39,27 @@ describe('Latent Field brand contract', () => {
 
     expect(base_layout_source).toContain('class="paper_index"');
     expect(base_layout_source).toContain('Latent Field | Zhenglong Chen');
+  });
+
+  test('keeps the English homepage shell and explicitly labels English article chrome', async () => {
+    const [home_source, article_layout_source] = await Promise.all([
+      read_source_file('src/pages/index.astro'),
+      read_source_file('src/layouts/article_layout.astro'),
+    ]);
+
+    expect(home_source).toContain('language="en"');
+    expect(article_layout_source).toContain('<p class="article_kicker" lang="en">Latent Field / Article</p>');
+  });
+
+  test('keeps motion reduction and selected-index destinations explicit', async () => {
+    const [css_source, home_source] = await Promise.all([
+      read_source_file('src/styles/global.css'),
+      read_source_file('src/pages/index.astro'),
+    ]);
+
+    expect(css_source).toContain('.project_row:hover, .post_row:hover { transform: none; }');
+    expect(home_source).toContain('href="/research">Research</a>');
+    expect(home_source).toContain('href="/projects">Projects</a>');
+    expect(home_source).not.toContain('Full index');
   });
 });

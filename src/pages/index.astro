@@ -31,7 +31,7 @@ const featured_link_aria_label = featured_post
 <Base_layout
   title="Zhenglong Chen | VLM Algorithm Engineer"
   description="Zhenglong Chen, VLM Algorithm Engineer. Research, writing, and project work."
-  language="zh"
+  language="en"
   canonical_path="/"
 >
   <div class="shell">
@@ -61,7 +61,10 @@ const featured_link_aria_label = featured_post
           <p class="section_kicker">01 / Index</p>
           <h2 id="work_title">Selected Research &amp; Projects</h2>
         </div>
-        <a class="section_link" href="/projects">Full index</a>
+        <nav class="section_links" aria-label="Selected work index">
+          <a class="section_link" href="/research">Research</a>
+          <a class="section_link" href="/projects">Projects</a>
+        </nav>
       </header>
       <Project_list work_entries={selected_work} />
     </section>

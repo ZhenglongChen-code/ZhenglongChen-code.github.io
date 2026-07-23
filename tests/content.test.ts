@@ -137,7 +137,7 @@ describe('site header source', () => {
     );
 
     expect(source).toContain('<header class="site_header shell" lang="en">');
-    expect(source).toContain('aria-label="Zhenglong Chen, return home"');
+    expect(source).toContain('aria-label="Latent Field, research notes by Zhenglong Chen, return home"');
     expect(source).toContain('aria-label="Primary navigation"');
   });
 });

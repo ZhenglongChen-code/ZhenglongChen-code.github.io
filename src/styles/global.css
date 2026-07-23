@@ -109,6 +109,7 @@ a:focus-visible, button:focus-visible, input:focus-visible, textarea:focus-visib
 .writing_section { border-bottom: 0; }
 .section_header { display: flex; justify-content: space-between; gap: 2rem; align-items: baseline; margin-bottom: 1.25rem; padding-bottom: 0.75rem; border-bottom: 1px solid var(--rule); }
 .section_header h2 { margin: 0.55rem 0 0; font: 400 clamp(2rem, 3.3vw, 3.6rem) / 1 var(--serif); letter-spacing: -0.055em; }
+.section_links { display: flex; flex-wrap: wrap; gap: 1.25rem; }
 .section_kicker, .list_heading, .article_kicker { color: var(--ink); }
 .section_kicker::first-letter { color: var(--vermilion); }
 
@@ -207,7 +208,8 @@ a:focus-visible, button:focus-visible, input:focus-visible, textarea:focus-visib
   .hero { padding-top: 3.4rem; }
   .hero h1 { font-size: clamp(4.2rem, 19vw, 5.8rem); }
   .section_header { display: block; }
-  .section_link { display: inline-block; margin-top: 1.25rem; }
+  .section_links { margin-top: 1.25rem; }
+  .section_link { display: inline-block; }
   .project_row { grid-template-columns: 1fr; gap: 0.4rem; }
   .project_entry { grid-template-columns: 1fr; }
   .post_row { grid-template-columns: 1.8rem minmax(0, 1fr); gap: 0.65rem; }
@@ -219,4 +221,5 @@ a:focus-visible, button:focus-visible, input:focus-visible, textarea:focus-visib
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
   *, *::before, *::after { scroll-behavior: auto !important; animation: none !important; transition: none !important; }
+  .project_row:hover, .post_row:hover { transform: none; }
 }

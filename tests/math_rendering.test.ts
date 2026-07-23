@@ -1,5 +1,6 @@
 import { readFile as read_file } from 'node:fs/promises';
 import { resolve as resolve_path } from 'node:path';
+import matter from 'gray-matter';
 import { describe, expect, it } from 'vitest';
 import astro_config from '../astro.config.mjs';
 import { get_public_posts } from '../src/lib/content';
@@ -44,11 +45,15 @@ describe('Markdown math rendering', () => {
 
   it('keeps the diagnostic formula article out of public collections', async () => {
     const fixture = await read_source('src/content/writing/math-rendering-check.md');
+    const parsed_fixture = matter(fixture);
     const public_posts = get_public_posts([
-      { id: 'math-rendering-check', data: { date: new Date('2026-07-23'), draft: true } },
+      {
+        id: 'math-rendering-check',
+        data: { date: new Date('2026-07-23'), draft: parsed_fixture.data.draft === true },
+      },
     ]);
 
-    expect(fixture).toContain('draft: true');
+    expect(parsed_fixture.data.draft).toBe(true);
     expect(public_posts).toEqual([]);
   });
 });
