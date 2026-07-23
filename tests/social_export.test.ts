@@ -77,6 +77,81 @@ describe('social article formatters', () => {
     expect(zhihu_output).toContain('http://106.14.173.234/articles/building-a-writing-home');
   });
 
+  it('preserves complex inline and block TeX source without Markdown reinterpretation', () => {
+    const sentinel_like_text = '\uE000social-math-0\uE0010\uE002';
+    const math_article: social_article = {
+      ...article,
+      markdown: [
+        `$a **b** c$ and $x \\* y$ ${sentinel_like_text}`,
+        '',
+        '$$',
+        'E = mc^2',
+        '$$',
+        '',
+        '价格是 \\$100。',
+      ].join('\n'),
+    };
+
+    const wechat_output = format_wechat_html(math_article);
+    const xiaohongshu_output = format_xiaohongshu(math_article);
+
+    for (const output of [wechat_output, xiaohongshu_output]) {
+      expect(output).toContain('$a **b** c$');
+      expect(output).toContain('$x \\* y$');
+      expect(output).toContain('$$\nE = mc^2\n$$');
+      expect(output).toContain(sentinel_like_text);
+    }
+    expect(xiaohongshu_output).toContain('价格是 $100。');
+    expect(wechat_output).not.toContain('<strong>');
+  });
+
+  it('never splits a family emoji grapheme while fitting Xiaohongshu output', () => {
+    const family_emoji = '👨‍👩‍👧‍👦';
+    const emoji_article: social_article = {
+      ...article,
+      markdown: family_emoji.repeat(200),
+    };
+
+    const output = format_xiaohongshu(emoji_article);
+    const emoji_remainder = output.replaceAll(family_emoji, '');
+    const segmenter = new Intl.Segmenter('zh', { granularity: 'grapheme' });
+
+    expect(Array.from(segmenter.segment(output)).length).toBeLessThanOrEqual(1000);
+    expect(emoji_remainder).not.toMatch(/[👨👩👧👦]/u);
+  });
+
+  it('rejects hostile canonical URLs at every public formatter boundary', () => {
+    const hostile_article: social_article = {
+      ...article,
+      canonical_url: 'javascript:alert(1)',
+    };
+
+    expect(() => format_zhihu(hostile_article)).toThrow(/canonical.*http/i);
+    expect(() => format_wechat_html(hostile_article)).toThrow(/canonical.*http/i);
+    expect(() => format_xiaohongshu(hostile_article)).toThrow(/canonical.*http/i);
+
+    const credentialed_article: social_article = {
+      ...article,
+      canonical_url: 'https://user:secret@example.test/articles/post',
+    };
+
+    expect(() => format_wechat_html(credentialed_article)).toThrow(/canonical.*credential/i);
+  });
+
+  it('does not duplicate an existing canonical source across social formats', () => {
+    const source_markdown = `[原文](${article.canonical_url})`;
+    const sourced_article: social_article = { ...article, markdown: source_markdown };
+    const url_pattern = new RegExp(article.canonical_url, 'gu');
+
+    const zhihu_output = format_zhihu(sourced_article);
+    const wechat_output = format_wechat_html(sourced_article);
+    const xiaohongshu_output = format_xiaohongshu(sourced_article);
+
+    expect(zhihu_output.match(url_pattern)).toHaveLength(1);
+    expect(wechat_output.match(url_pattern)).toHaveLength(1);
+    expect(xiaohongshu_output.match(url_pattern)).toHaveLength(1);
+  });
+
   it('removes unsafe raw HTML, event handlers, and JavaScript URLs from WeChat HTML', () => {
     const unsafe_article: social_article = {
       ...article,
@@ -99,7 +174,7 @@ describe('social article formatters', () => {
     expect(output).toContain('safe label');
   });
 
-  it('isolates the trusted WeChat source from unclosed unsafe raw Markdown', () => {
+  it('rejects unclosed unsafe raw Markdown before formatting WeChat output', () => {
     const unsafe_article: social_article = {
       ...article,
       markdown: [
@@ -110,13 +185,7 @@ describe('social article formatters', () => {
       ].join('\n'),
     };
 
-    const output = format_wechat_html(unsafe_article);
-
-    expect(output).toContain('$$E = mc^2$$');
-    expect(output).not.toContain('p(y \\mid x)');
-    expect(output).toContain('http://106.14.173.234/articles/building-a-writing-home');
-    expect(output).not.toMatch(/<(script|style|link|iframe|object|embed)\b/i);
-    expect(output).not.toContain('unclosed unsafe content');
+    expect(() => format_wechat_html(unsafe_article)).toThrow(/unclosed.*script/i);
   });
 
   it('creates deduplicated sanitized Xiaohongshu topics', () => {

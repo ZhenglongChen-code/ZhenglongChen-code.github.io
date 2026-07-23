@@ -10,7 +10,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join, parse, resolve } from 'node:path';
 import { afterEach as after_each, describe, expect, it } from 'vitest';
-import { export_social_articles } from '../scripts/export_social';
+import { cleanup_published_backup, export_social_articles } from '../scripts/export_social';
 
 const temporary_roots: string[] = [];
 
@@ -64,6 +64,21 @@ after_each(async () => {
 });
 
 describe('export_social_articles', () => {
+  it('warns without rejecting when published backup cleanup fails', async () => {
+    const warnings: string[] = [];
+
+    await expect(cleanup_published_backup(
+      async () => {
+        throw new Error('backup cleanup failed');
+      },
+      (warning) => warnings.push(warning),
+    )).resolves.toBeUndefined();
+
+    expect(warnings).toEqual([
+      'Social export published, but backup cleanup failed; remove the backup manually.',
+    ]);
+  });
+
   it('exports sorted public Chinese articles with platform defaults and disables', async () => {
     const project_root = await create_temporary_project();
     const common_frontmatter = [
@@ -150,7 +165,7 @@ describe('export_social_articles', () => {
     expect(Object.keys(export_tree).some((path) => path.startsWith('math-disabled/'))).toBe(false);
   });
 
-  it('keeps the trusted WeChat source outside unclosed unsafe Markdown content', async () => {
+  it('rejects unclosed unsafe raw Markdown before publishing exports', async () => {
     const project_root = await create_temporary_project();
     const frontmatter = [
       'title: 不安全公式',
@@ -168,15 +183,12 @@ describe('export_social_articles', () => {
 
     await write_article(project_root, 'unsafe-math', frontmatter, markdown);
 
-    await export_social_articles({ project_root, site_url: 'https://example.test' });
-    const export_tree = await read_export_tree(project_root);
-    const wechat_output = export_tree['unsafe-math/wechat.html'] ?? '';
-
-    expect(wechat_output).toContain('$$E = mc^2$$');
-    expect(wechat_output).not.toContain('p(y \\mid x)');
-    expect(wechat_output).toContain('https://example.test/articles/unsafe-math');
-    expect(wechat_output).not.toMatch(/<(script|style|link|iframe|object|embed)\b/i);
-    expect(wechat_output).not.toContain('unclosed unsafe content');
+    await expect(export_social_articles({
+      project_root,
+      site_url: 'https://example.test',
+    })).rejects.toThrow(/unsafe-math.*unclosed.*iframe/i);
+    await expect(readdir(resolve(project_root, 'social_exports')))
+      .rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('rejects malformed SITE_URL input before creating an output directory', async () => {

@@ -16,6 +16,7 @@ import {
   format_xiaohongshu,
   format_zhihu,
   type social_article,
+  validate_unsafe_raw_html,
 } from '../src/lib/social_export';
 import { article_path } from '../src/lib/site_routes';
 
@@ -59,8 +60,22 @@ export type social_export_result = {
   platforms: social_platform_name[];
 };
 
+type warning_logger = (warning: string) => void;
+
 const stage_prefix = '.social_exports-stage-';
 const backup_prefix = '.social_exports-backup-';
+
+/** Warns about a recoverable post-publication backup cleanup failure without rejecting publication. */
+export async function cleanup_published_backup(
+  remove_backup: () => Promise<void>,
+  warn: warning_logger = console.warn,
+): Promise<void> {
+  try {
+    await remove_backup();
+  } catch {
+    warn('Social export published, but backup cleanup failed; remove the backup manually.');
+  }
+}
 
 /** Narrows unknown values to records without weakening types. */
 function is_record(value: unknown): value is Record<string, unknown> {
@@ -237,6 +252,16 @@ function parse_article(source: string, slug: string, site_url: URL): export_arti
     return undefined;
   }
 
+  try {
+    validate_unsafe_raw_html(parsed_article.content);
+  } catch (error: unknown) {
+    if (error instanceof TypeError && /unsafe raw HTML/iu.test(error.message)) {
+      throw new TypeError(`${slug}: ${error.message}`);
+    }
+
+    throw error;
+  }
+
   return {
     slug,
     title: read_required_string(raw_frontmatter, 'title', slug),
@@ -360,6 +385,7 @@ async function publish_exports(paths: export_paths, prepared_articles: prepared_
   let stage_is_present = true;
   let backup_path: string | undefined;
   let backup_has_previous_output = false;
+  let backup_cleanup_attempted = false;
 
   try {
     await write_staged_exports(stage_path, prepared_articles);
@@ -393,7 +419,16 @@ async function publish_exports(paths: export_paths, prepared_articles: prepared_
     }
 
     if (backup_has_previous_output) {
-      await remove_temporary_path(paths.project_root, backup_path, backup_prefix);
+      const published_backup_path = backup_path;
+      if (!published_backup_path) {
+        throw new Error('Missing social export backup path after publication.');
+      }
+
+      backup_cleanup_attempted = true;
+      await cleanup_published_backup(
+        () => remove_temporary_path(paths.project_root, published_backup_path, backup_prefix),
+        (warning) => console.warn(`${warning} Backup: ${published_backup_path}`),
+      );
       backup_has_previous_output = false;
     }
   } finally {
@@ -404,6 +439,7 @@ async function publish_exports(paths: export_paths, prepared_articles: prepared_
     if (
       backup_path
       && !backup_has_previous_output
+      && !backup_cleanup_attempted
       && await path_exists(backup_path)
     ) {
       await remove_temporary_path(paths.project_root, backup_path, backup_prefix);

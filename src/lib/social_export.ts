@@ -47,6 +47,11 @@ const wechat_tags = [
 
 const xiaohongshu_max_characters = 1000;
 
+type protected_math_source = {
+  markdown: string;
+  replacements: ReadonlyMap<string, string>;
+};
+
 /** Renders a Markdown image token as its human-readable alt text only. */
 function render_image_alt({ text }: Tokens.Image): string {
   return text;
@@ -57,9 +62,17 @@ function render_plain_break(): string {
   return '\n';
 }
 
-const plain_text_renderer = new Renderer();
-plain_text_renderer.image = render_image_alt;
-plain_text_renderer.br = render_plain_break;
+/** Creates a plain-text renderer that retains an existing canonical link destination. */
+function create_plain_text_renderer(canonical_url?: string): Renderer {
+  const plain_text_renderer = new Renderer();
+  plain_text_renderer.image = render_image_alt;
+  plain_text_renderer.br = render_plain_break;
+  plain_text_renderer.link = ({ href, text }: Tokens.Link): string => (
+    canonical_url && href === canonical_url ? `${text} ${href}` : text
+  );
+
+  return plain_text_renderer;
+}
 
 /** Adds a trusted static style while discarding any source style value. */
 function style_wechat_tag(tag_name: string, tag_attributes: Attributes): Tag {
@@ -73,14 +86,24 @@ function style_wechat_tag(tag_name: string, tag_attributes: Attributes): Tag {
   };
 }
 
-/** Counts complete Unicode code points. */
-function count_characters(value: string): number {
-  return Array.from(value).length;
+/** Returns grapheme clusters, falling back deterministically to Unicode code points. */
+function split_graphemes(value: string): string[] {
+  if (typeof Intl.Segmenter === 'function') {
+    const segmenter = new Intl.Segmenter('zh', { granularity: 'grapheme' });
+    return Array.from(segmenter.segment(value), ({ segment }) => segment);
+  }
+
+  return Array.from(value);
 }
 
-/** Truncates by complete Unicode code points without splitting surrogate pairs. */
+/** Counts complete Unicode grapheme clusters. */
+function count_characters(value: string): number {
+  return split_graphemes(value).length;
+}
+
+/** Truncates by complete Unicode grapheme clusters without splitting visible characters. */
 function truncate_text(value: string, max_characters: number): string {
-  return Array.from(value).slice(0, Math.max(0, max_characters)).join('');
+  return split_graphemes(value).slice(0, Math.max(0, max_characters)).join('');
 }
 
 /** Escapes a text value for safe interpolation into trusted static HTML. */
@@ -98,6 +121,114 @@ function escape_html(value: string): string {
   });
 }
 
+/** Rejects canonical URLs that are not safe absolute public HTTP(S) URLs. */
+function validate_canonical_url(canonical_url: string): void {
+  let parsed_url: URL;
+
+  try {
+    parsed_url = new URL(canonical_url);
+  } catch {
+    throw new TypeError('Canonical URL must be a valid credential-free HTTP(S) URL.');
+  }
+
+  if (
+    !['http:', 'https:'].includes(parsed_url.protocol)
+    || !parsed_url.hostname
+    || parsed_url.username
+    || parsed_url.password
+  ) {
+    throw new TypeError('Canonical URL must be a valid credential-free HTTP(S) URL.');
+  }
+}
+
+/** Rejects unclosed non-text raw HTML tags that would silently absorb source content. */
+export function validate_unsafe_raw_html(markdown: string): void {
+  const unsafe_tag_pattern = /<\/?(script|style|textarea|iframe|object|embed)\b[^>]*>/giu;
+  const open_tags: string[] = [];
+
+  for (const match of markdown.matchAll(unsafe_tag_pattern)) {
+    const raw_tag = match[1];
+    if (!raw_tag) {
+      continue;
+    }
+
+    const tag = raw_tag.toLowerCase();
+    const tag_text = match[0];
+
+    if (tag === 'embed') {
+      continue;
+    }
+
+    if (tag_text.startsWith('</')) {
+      const open_tag = open_tags.pop();
+      if (open_tag !== tag) {
+        throw new TypeError(`Unbalanced unsafe raw HTML tag </${tag}>.`);
+      }
+      continue;
+    }
+
+    if (!tag_text.endsWith('/>')) {
+      open_tags.push(tag);
+    }
+  }
+
+  if (open_tags.length > 0) {
+    throw new TypeError(`Unclosed unsafe raw HTML tag <${open_tags.at(-1)}>.`);
+  }
+}
+
+/** Protects TeX delimiters from Markdown parsing with deterministic collision-free sentinels. */
+function protect_math_source(markdown: string): protected_math_source {
+  let prefix_index = 0;
+  let sentinel_prefix = '';
+
+  do {
+    sentinel_prefix = `\uE000social-math-${prefix_index}\uE001`;
+    prefix_index += 1;
+  } while (markdown.includes(sentinel_prefix));
+
+  const replacements = new Map<string, string>();
+  const create_placeholder = (formula: string): string => {
+    const placeholder = `${sentinel_prefix}${replacements.size}\uE002`;
+    replacements.set(placeholder, formula);
+    return placeholder;
+  };
+  const block_math_pattern = /(?<!\\)\$\$[\s\S]*?(?<!\\)\$\$/gu;
+  const inline_math_pattern = /(?<!\\)\$(?!\$)(?:\\.|[^$\n])+?(?<!\\)\$/gu;
+  const protected_blocks = markdown.replace(block_math_pattern, create_placeholder);
+
+  return {
+    markdown: protected_blocks.replace(inline_math_pattern, create_placeholder),
+    replacements,
+  };
+}
+
+/** Restores protected TeX source as literal text, optionally escaped for HTML. */
+function restore_math_source(
+  value: string,
+  replacements: ReadonlyMap<string, string>,
+  should_escape_html: boolean,
+): string {
+  let restored_value = value;
+
+  for (const [placeholder, formula] of replacements) {
+    const replacement = should_escape_html ? escape_html(formula) : formula;
+    restored_value = restored_value.replaceAll(placeholder, () => replacement);
+  }
+
+  return restored_value;
+}
+
+/** Validates shared source inputs before any platform formatter transforms them. */
+function validate_social_article(article: social_article): void {
+  if (typeof article.markdown !== 'string') {
+    throw new TypeError('Article Markdown must be a string.');
+  }
+
+  validate_canonical_url(article.canonical_url);
+  validate_unsafe_raw_html(article.markdown);
+}
+
 /** Builds a trusted, escaped WeChat source link after untrusted Markdown is sanitized. */
 function format_wechat_source(canonical_url: string): string {
   const escaped_url = escape_html(canonical_url);
@@ -106,8 +237,11 @@ function format_wechat_source(canonical_url: string): string {
 }
 
 /** Converts Markdown to collapsed plain text suitable for a social post. */
-function markdown_to_plain_text(markdown: string): string {
-  const parsed_markdown = marked.parse(markdown, { renderer: plain_text_renderer });
+function markdown_to_plain_text(markdown: string, canonical_url?: string): string {
+  const protected_math = protect_math_source(markdown);
+  const parsed_markdown = marked.parse(protected_math.markdown, {
+    renderer: create_plain_text_renderer(canonical_url),
+  });
 
   if (typeof parsed_markdown !== 'string') {
     throw new TypeError('Markdown parsing must return a string.');
@@ -119,7 +253,11 @@ function markdown_to_plain_text(markdown: string): string {
     nonTextTags: ['script', 'style', 'textarea', 'option', 'iframe', 'object', 'embed'],
   });
 
-  return decode_html_entities(plain_text).replace(/\s+/gu, ' ').trim();
+  return restore_math_source(
+    decode_html_entities(plain_text).replace(/\s+/gu, ' ').trim(),
+    protected_math.replacements,
+    false,
+  );
 }
 
 /** Builds complete, unique hashtag topics in source order within the size budget. */
@@ -157,16 +295,19 @@ function get_section_budget(reserved_sections: string[]): number {
 
 /** Formats the original Markdown with a stable canonical source for Zhihu. */
 export function format_zhihu(article: social_article): string {
-  return `${article.markdown}\n\n---\n\n原文：${article.canonical_url}\n`;
+  validate_social_article(article);
+
+  return article.markdown.includes(article.canonical_url)
+    ? `${article.markdown}\n`
+    : `${article.markdown}\n\n---\n\n原文：${article.canonical_url}\n`;
 }
 
 /** Produces sanitized, self-contained HTML with only trusted inline presentation styles. */
 export function format_wechat_html(article: social_article): string {
-  if (typeof article.markdown !== 'string') {
-    throw new TypeError('Article Markdown must be a string.');
-  }
+  validate_social_article(article);
 
-  const parsed_markdown = marked.parse(article.markdown);
+  const protected_math = protect_math_source(article.markdown);
+  const parsed_markdown = marked.parse(protected_math.markdown);
   if (typeof parsed_markdown !== 'string') {
     throw new TypeError('Markdown parsing must return a string.');
   }
@@ -194,19 +335,24 @@ export function format_wechat_html(article: social_article): string {
     transformTags: transform_tags,
   });
 
-  const trusted_source = format_wechat_source(article.canonical_url);
+  const restored_html = restore_math_source(sanitized_html, protected_math.replacements, true);
+  const trusted_source = article.markdown.includes(article.canonical_url)
+    ? ''
+    : format_wechat_source(article.canonical_url);
 
-  return `<section style="margin:0 auto;max-width:720px;color:#242424;background:#ffffff;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;word-break:break-word;">${sanitized_html}${trusted_source}</section>`;
+  return `<section style="margin:0 auto;max-width:720px;color:#242424;background:#ffffff;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;word-break:break-word;">${restored_html}${trusted_source}</section>`;
 }
 
 /** Formats a concise plain-text Xiaohongshu post with safe Unicode truncation. */
 export function format_xiaohongshu(article: social_article): string {
+  validate_social_article(article);
+  const has_canonical_source = article.markdown.includes(article.canonical_url);
   const canonical_line = `原文：${article.canonical_url}`;
   if (count_characters(canonical_line) > xiaohongshu_max_characters) {
     throw new TypeError('Canonical source line exceeds the 1000-character Xiaohongshu limit.');
   }
 
-  const reserved_sections = [canonical_line];
+  const reserved_sections = has_canonical_source ? [] : [canonical_line];
   const title = truncate_text(
     markdown_to_plain_text(article.title),
     Math.min(80, get_section_budget(reserved_sections)),
@@ -232,11 +378,11 @@ export function format_xiaohongshu(article: social_article): string {
   }
 
   const body = truncate_text(
-    markdown_to_plain_text(article.markdown),
+    markdown_to_plain_text(article.markdown, article.canonical_url),
     Math.min(760, get_section_budget(reserved_sections)),
   );
 
-  return [title, description, body, canonical_line, topics]
+  return [title, description, body, has_canonical_source ? '' : canonical_line, topics]
     .filter(Boolean)
     .join('\n\n');
 }
