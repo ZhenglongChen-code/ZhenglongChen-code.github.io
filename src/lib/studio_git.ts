@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { execFile as exec_file } from 'node:child_process';
 import { constants as fs_constants } from 'node:fs';
-import { access, lstat, mkdir, open, realpath, rename, unlink } from 'node:fs/promises';
+import { access, lstat, mkdir, open, realpath, rename, unlink, readFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
 
@@ -11,6 +11,8 @@ const token_pattern = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/;
 const remote_pattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const commit_message_pattern = /^[^\x00-\x1f\x7f-][^\x00-\x1f\x7f]{0,199}$/;
 const writing_directory_pattern = /^src\/content\/writing(?:\/[A-Za-z0-9][A-Za-z0-9._-]*)*$/;
+const safe_branch_token = (value: string): boolean => token_pattern.test(value) && !value.includes('//') && !value.includes('..') && !value.endsWith('.lock') && !value.startsWith('-');
+const safe_remote_token = (value: string): boolean => remote_pattern.test(value) && !value.endsWith('.lock') && !value.startsWith('-');
 
 export type git_publish_input = {
   operation: 'publish_new' | 'publish_update';
@@ -20,10 +22,11 @@ export type git_publish_input = {
   commit_message: string;
 };
 
-export type git_publish_failure_code = 'validation' | 'unsafe_path' | 'article_exists' | 'article_missing' | 'stale_source' | 'target_dirty' | 'repository_busy' | 'wrong_branch' | 'git_failed';
+export type git_publish_failure_code = 'validation' | 'unsafe_path' | 'article_exists' | 'article_missing' | 'stale_source' | 'target_dirty' | 'repository_busy' | 'wrong_branch' | 'integrity_failed' | 'git_failed';
 export type git_publish_failure = { ok: false; code: git_publish_failure_code; message: string };
-export type git_publish_success = { ok: true; path: string; commit_sha: string; push_status: 'pushed' | 'failed'; recovery?: string };
-export type git_publish_result = git_publish_failure | git_publish_success;
+export type git_push_failed = { ok: false; code: 'push_failed'; message: string; commit_sha: string; committed_paths: string[]; recovery: string };
+export type git_publish_success = { ok: true; path: string; commit_sha: string; push_status: 'pushed' };
+export type git_publish_result = git_publish_failure | git_push_failed | git_publish_success;
 
 export interface git_adapter { publish(input: git_publish_input): Promise<git_publish_result>; }
 export type git_command_runner = (file: string, args: readonly string[], cwd: string) => Promise<{ stdout: string; stderr: string }>;
@@ -38,12 +41,12 @@ const is_inside = (root: string, value: string): boolean => { const value_relati
 
 /** Publishes one verified Markdown article without changing unrelated Git state. */
 export class local_git_adapter implements git_adapter {
+  private static readonly repository_queues = new Map<string, Promise<void>>();
   private readonly repository_root: string;
   private readonly publication_branch: string;
   private readonly remote_name: string;
   private readonly writing_directory: string;
   private readonly command_runner: git_command_runner;
-  private queue: Promise<void> = Promise.resolve();
 
   constructor(options: local_git_adapter_options) {
     this.repository_root = resolve(options.repository_root);
@@ -55,8 +58,12 @@ export class local_git_adapter implements git_adapter {
 
   async publish(input: git_publish_input): Promise<git_publish_result> {
     const source = new Uint8Array(input.source);
-    const queued = this.queue.then(() => this.publish_locked({ ...input, source }));
-    this.queue = queued.then(() => undefined, () => undefined);
+    const snapshot = { ...input, source, commit_message: `${input.commit_message}`, slug: `${input.slug}`, expected_source_hash: input.expected_source_hash === undefined ? undefined : `${input.expected_source_hash}` };
+    let canonical_root: string;
+    try { canonical_root = await realpath(this.repository_root); } catch { return { ok: false, code: 'git_failed', message: 'Git publication failed; inspect the local repository state and retry.' }; }
+    const previous = local_git_adapter.repository_queues.get(canonical_root) ?? Promise.resolve();
+    const queued = previous.then(() => this.publish_locked(snapshot, canonical_root));
+    local_git_adapter.repository_queues.set(canonical_root, queued.then(() => undefined, () => undefined));
     return queued;
   }
 
@@ -65,18 +72,20 @@ export class local_git_adapter implements git_adapter {
     return output.stdout.trim();
   }
 
-  private async publish_locked(input: git_publish_input): Promise<git_publish_result> {
-    if (!slug_pattern.test(input.slug) || !commit_message_pattern.test(input.commit_message) || input.commit_message.startsWith('-') || !token_pattern.test(this.publication_branch) || this.publication_branch.includes('..') || !remote_pattern.test(this.remote_name) || !writing_directory_pattern.test(this.writing_directory)) return { ok: false, code: 'validation', message: 'Invalid publication input or configuration.' };
+  private async publish_locked(input: git_publish_input, canonical_root: string): Promise<git_publish_result> {
+    if (!slug_pattern.test(input.slug) || !commit_message_pattern.test(input.commit_message) || input.commit_message.startsWith('-') || !safe_branch_token(this.publication_branch) || !safe_remote_token(this.remote_name) || !writing_directory_pattern.test(this.writing_directory)) return { ok: false, code: 'validation', message: 'Invalid publication input or configuration.' };
     if (input.operation === 'publish_update' && (!input.expected_source_hash || !/^[a-f0-9]{64}$/.test(input.expected_source_hash))) return { ok: false, code: 'validation', message: 'An update requires a SHA-256 expected_source_hash.' };
     try {
-      const configured_root = await realpath(this.repository_root);
+      const configured_root = canonical_root;
       const git_root = await realpath(await this.run_git('rev-parse', '--show-toplevel'));
       if (configured_root !== git_root) return { ok: false, code: 'unsafe_path', message: 'Configured repository root does not match Git root.' };
+      await this.run_git('check-ref-format', '--branch', this.publication_branch);
       const branch = await this.run_git('symbolic-ref', '--quiet', '--short', 'HEAD').catch(() => '');
       if (branch !== this.publication_branch) return { ok: false, code: 'wrong_branch', message: 'Repository is not on the configured publication branch.' };
-      const git_dir_raw = await this.run_git('rev-parse', '--git-dir');
-      const git_dir = resolve(configured_root, git_dir_raw);
-      for (const marker of ['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'BISECT_LOG', 'rebase-apply', 'rebase-merge']) if (await this.exists(join(git_dir, marker))) return { ok: false, code: 'repository_busy', message: 'Repository has an unfinished Git operation.' };
+      for (const marker of ['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'BISECT_LOG', 'rebase-apply', 'rebase-merge']) {
+        const marker_path = await this.run_git('rev-parse', '--git-path', marker);
+        if (await this.exists(resolve(configured_root, marker_path))) return { ok: false, code: 'repository_busy', message: 'Repository has an unfinished Git operation.' };
+      }
       if ((await this.run_git('ls-files', '-u')).trim()) return { ok: false, code: 'repository_busy', message: 'Repository has unresolved paths.' };
 
       const writing_root = resolve(configured_root, this.writing_directory);
@@ -92,7 +101,7 @@ export class local_git_adapter implements git_adapter {
       if (input.operation === 'publish_update' && !exists) return { ok: false, code: 'article_missing', message: 'Article does not exist.' };
       if (exists && (await this.path_dirty(relative_path))) return { ok: false, code: 'target_dirty', message: 'Target article has uncommitted changes.' };
       if (exists) {
-        const current = await import('node:fs/promises').then(({ readFile }) => readFile(target));
+        const current = await readFile(target);
         if (sha256(current) !== input.expected_source_hash) return { ok: false, code: 'stale_source', message: 'Target article changed since it was read.' };
       }
       await this.atomic_write(target, input.source);
@@ -100,9 +109,9 @@ export class local_git_adapter implements git_adapter {
       await this.run_git('commit', '--only', '-m', input.commit_message, '--', relative_path);
       const commit_sha = await this.run_git('rev-parse', 'HEAD');
       const changed = (await this.run_git('diff-tree', '--no-commit-id', '--name-only', '-r', 'HEAD')).split('\n').filter(Boolean);
-      if (changed.length !== 1 || changed[0] !== relative_path) return { ok: false, code: 'git_failed', message: 'Commit did not contain exactly the target article.' };
+      if (changed.length !== 1 || changed[0] !== relative_path || !this.bytes_equal(await this.committed_bytes(commit_sha, relative_path), input.source)) return { ok: false, code: 'integrity_failed', message: 'Committed article integrity verification failed.' };
       try { await this.run_git('push', this.remote_name, this.publication_branch); return { ok: true, path: relative_path, commit_sha, push_status: 'pushed' }; }
-      catch { return { ok: true, path: relative_path, commit_sha, push_status: 'failed', recovery: 'Local commit was kept. Fetch the remote branch, resolve the divergence, then push normally without force.' }; }
+      catch { return { ok: false, code: 'push_failed', message: 'Push failed after the local article commit was created.', commit_sha, committed_paths: [relative_path], recovery: 'Local commit was kept. Fetch the remote branch, resolve divergence, then push normally without force.' }; }
     } catch { return { ok: false, code: 'git_failed', message: 'Git publication failed; inspect the local repository state and retry.' }; }
   }
 
@@ -116,6 +125,16 @@ export class local_git_adapter implements git_adapter {
   }
 
   private async exists(path: string): Promise<boolean> { try { await access(path, fs_constants.F_OK); return true; } catch { return false; } }
+
+  private async committed_bytes(commit_sha: string, relative_path: string): Promise<Uint8Array> {
+    const object_name = `${commit_sha}:${relative_path}`;
+    const output = await exec_file_async('git', ['show', '--no-textconv', '--format=', object_name], { cwd: this.repository_root, encoding: 'buffer', maxBuffer: 10_000_000 });
+    return new Uint8Array(output.stdout);
+  }
+
+  private bytes_equal(left: Uint8Array, right: Uint8Array): boolean {
+    return left.length === right.length && left.every((value, index) => value === right[index]);
+  }
 
   private async atomic_write(target: string, source: Uint8Array): Promise<void> {
     await mkdir(dirname(target), { recursive: true });

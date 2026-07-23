@@ -2,10 +2,10 @@ import { createHash } from 'node:crypto';
 import { execFile as exec_file } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, describe, expect, it } from 'vitest';
-import { local_git_adapter, type git_publish_result } from '../src/lib/studio_git';
+import { local_git_adapter, type git_command_runner, type git_publish_result } from '../src/lib/studio_git';
 
 const exec_file_async = promisify(exec_file);
 const sha256 = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex');
@@ -81,8 +81,48 @@ describe('local_git_adapter', () => {
     const { root, remote, adapter } = await make_repository();
     const other = join(root, '..', 'other'); await git(root, 'clone', remote, other); await git(other, 'config', 'user.email', 'test@example.com'); await git(other, 'config', 'user.name', 'Other'); await git(other, 'checkout', 'main'); await writeFile(join(other, 'other.md'), 'other'); await git(other, 'add', '--', 'other.md'); await git(other, 'commit', '-m', 'other'); await git(other, 'push', 'origin', 'main');
     const result: git_publish_result = await adapter.publish({ operation: 'publish_new', slug: 'local', source: new Uint8Array([1]), commit_message: 'Publish local' });
-    expect(result).toMatchObject({ ok: true, push_status: 'failed' });
-    if (result.ok) expect(result.recovery).toMatch(/pull|rebase|resolve/i);
+    expect(result).toMatchObject({ ok: false, code: 'push_failed', committed_paths: ['src/content/writing/local.md'] });
+    if (!result.ok && result.code === 'push_failed') expect(result.recovery).toMatch(/fetch|resolve|push/i);
     expect(await git(root, 'show', '--format=', '--name-only', 'HEAD')).toBe('src/content/writing/local.md');
+  });
+
+  it('serializes separate adapters for one repository and reports generic rejected pushes without source content', async () => {
+    const { root } = await make_repository();
+    let active_adds = 0;
+    let maximum_adds = 0;
+    const runner: git_command_runner = async (file, args, cwd) => {
+      if (args[0] === 'push') throw new Error('remote rejected secret article content');
+      if (args[0] === 'add') { active_adds += 1; maximum_adds = Math.max(maximum_adds, active_adds); await new Promise<void>((resolve_delay) => setTimeout(resolve_delay, 30)); active_adds -= 1; }
+      const output = await exec_file_async(file, [...args], { cwd });
+      return { stdout: output.stdout, stderr: output.stderr };
+    };
+    const first = new local_git_adapter({ repository_root: root, publication_branch: 'main', remote_name: 'origin', writing_directory: 'src/content/writing', command_runner: runner });
+    const second = new local_git_adapter({ repository_root: root, publication_branch: 'main', remote_name: 'origin', writing_directory: 'src/content/writing', command_runner: runner });
+    const source = new TextEncoder().encode('private article body');
+    const [one, two] = await Promise.all([first.publish({ operation: 'publish_new', slug: 'one', source, commit_message: 'Publish one' }), second.publish({ operation: 'publish_new', slug: 'two', source, commit_message: 'Publish two' })]);
+    expect(maximum_adds).toBe(1);
+    for (const result of [one, two]) {
+      expect(result).toMatchObject({ ok: false, code: 'push_failed' });
+      if (!result.ok && result.code === 'push_failed') expect(result.message).not.toContain('private article body');
+    }
+    expect(await git(root, 'log', '--format=%s', '-2')).toContain('Publish one');
+    expect(source).toEqual(new TextEncoder().encode('private article body'));
+  });
+
+  it('rejects every Git operation marker through Git paths and invalid branch/remote configuration', async () => {
+    const { root } = await make_repository();
+    for (const marker of ['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'BISECT_LOG', 'rebase-apply', 'rebase-merge']) {
+      const marker_path = await git(root, 'rev-parse', '--git-path', marker);
+      await mkdir(marker.includes('rebase') ? join(root, marker_path) : dirname(join(root, marker_path)), { recursive: true });
+      if (!marker.includes('rebase')) await writeFile(join(root, marker_path), 'x');
+      const adapter = new local_git_adapter({ repository_root: root, publication_branch: 'main', remote_name: 'origin', writing_directory: 'src/content/writing' });
+      await expect(adapter.publish({ operation: 'publish_new', slug: `marker-${marker.toLowerCase().replaceAll('_', '-')}`, source: new Uint8Array([1]), commit_message: 'Publish marker' })).resolves.toMatchObject({ ok: false, code: 'repository_busy' });
+      await rm(join(root, marker_path), { recursive: true, force: true });
+    }
+    const invalid_configurations: ReadonlyArray<readonly [string, string]> = [['foo//bar', 'origin'], ['main', 'origin.lock'], ['-main', 'origin']];
+    for (const [publication_branch, remote_name] of invalid_configurations) {
+      const adapter = new local_git_adapter({ repository_root: root, publication_branch, remote_name, writing_directory: 'src/content/writing' });
+      await expect(adapter.publish({ operation: 'publish_new', slug: 'invalid-config', source: new Uint8Array([1]), commit_message: 'Publish config' })).resolves.toMatchObject({ ok: false, code: 'validation' });
+    }
   });
 });
