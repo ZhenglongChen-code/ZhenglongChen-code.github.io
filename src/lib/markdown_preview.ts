@@ -22,17 +22,40 @@ export class studio_validation_error extends Error {
 }
 
 type markdown_file = {
-  messages: ReadonlyArray<{ source?: string }>;
+  messages: ReadonlyArray<{ column?: unknown; line?: unknown; position?: { start?: markdown_position }; source?: string }>;
 };
 
 type markdown_position = {
+  column?: unknown;
+  line?: unknown;
   offset?: unknown;
 };
 
+/** Formats a parser position as a UI-safe field name without including Markdown source. */
+const math_issue_field = (position: markdown_position | undefined): string => {
+  const line = position?.line;
+  const column = position?.column;
+  if (typeof line !== 'number' || typeof column !== 'number' || !Number.isInteger(line) || !Number.isInteger(column) || line < 1 || column < 1) return 'markdown';
+  return `markdown.line_${line}.column_${column}`;
+};
+
+class math_render_error extends Error {
+  readonly field: string;
+
+  constructor(field: string) {
+    super('Invalid LaTeX.');
+    this.field = field;
+  }
+}
+
 /** Fails the shared pipeline when rehype-katex reports a formula parse error. */
 const rehype_reject_invalid_math = () => (_tree: unknown, file: markdown_file): void => {
-  if (file.messages.some((message) => message.source === 'rehype-katex')) {
-    throw new Error('Invalid LaTeX.');
+  const math_message = file.messages.find((message) => message.source === 'rehype-katex');
+  if (math_message) {
+    throw new math_render_error(math_issue_field({
+      line: math_message.line ?? math_message.position?.start?.line,
+      column: math_message.column ?? math_message.position?.start?.column,
+    }));
   }
 };
 
@@ -146,19 +169,25 @@ const contains_unmatched_math_marker = (source: string): boolean => {
 };
 
 /** Detects unmatched math fences and inline markers while preserving Markdown code contexts. */
-const has_invalid_math_delimiter = (markdown: string): boolean => {
+const find_invalid_math_delimiter = (markdown: string): string | undefined => {
   const markdown_tree = unified_processor().use(remark_parse).use(remark_math).parse(markdown);
-  let invalid = false;
+  let invalid_field: string | undefined;
   const inspect_node = (current_node: unknown): void => {
-    if (invalid || typeof current_node !== 'object' || current_node === null) return;
+    if (invalid_field !== undefined || typeof current_node !== 'object' || current_node === null) return;
     const markdown_node = current_node as markdown_node;
     const source = markdown_source(markdown, markdown_node);
     if (markdown_node.type === 'math' && source !== undefined && !has_closing_math_fence(source)) {
-      invalid = true;
+      invalid_field = math_issue_field(markdown_node.position?.start);
       return;
     }
     if (markdown_node.type === 'text' && source !== undefined && contains_unmatched_math_marker(source)) {
-      invalid = true;
+      const marker_offset = source.search(/(?<!\\)(?:\\\\)*\$/u);
+      const start_offset = markdown_node.position?.start?.offset;
+      const line = markdown_node.position?.start?.line;
+      const column = markdown_node.position?.start?.column;
+      invalid_field = typeof start_offset === 'number' && typeof line === 'number' && typeof column === 'number'
+        ? math_issue_field({ line, column: column + marker_offset })
+        : math_issue_field(markdown_node.position?.start);
       return;
     }
     if (Array.isArray(markdown_node.children)) {
@@ -166,7 +195,7 @@ const has_invalid_math_delimiter = (markdown: string): boolean => {
     }
   };
   inspect_node(markdown_tree);
-  return invalid;
+  return invalid_field;
 };
 
 /** Renders prevalidated Markdown with the same math extensions used by Astro's static build. */
@@ -178,19 +207,20 @@ export const render_markdown_preview = async (markdown: string): Promise<string>
       message: `Preview contains unsafe HTML (${unsafe_html}) that the sanitizer would remove.`,
     }]);
   }
-  if (has_invalid_math_delimiter(markdown)) {
+  const invalid_math_field = find_invalid_math_delimiter(markdown);
+  if (invalid_math_field) {
     throw new studio_validation_error([{
       code: 'invalid_math',
-      field: 'markdown',
+      field: invalid_math_field,
       message: 'Markdown contains invalid LaTeX.',
     }]);
   }
   try {
     return await (await preview_renderer).render(markdown).then((result) => result.code);
-  } catch {
+  } catch (error) {
     throw new studio_validation_error([{
       code: 'invalid_math',
-      field: 'markdown',
+      field: error instanceof math_render_error ? error.field : 'markdown',
       message: 'Markdown contains invalid LaTeX.',
     }]);
   }

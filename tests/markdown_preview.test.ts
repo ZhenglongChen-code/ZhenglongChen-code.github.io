@@ -24,29 +24,29 @@ describe('render_markdown_preview', () => {
     expect(html).not.toContain('<span onclick=');
   });
 
-  it('rejects malformed LaTeX with a typed validation issue', async () => {
-    await expect(render_markdown_preview('$\\frac{1}{$')).rejects.toMatchObject({
+  it('reports the source location for a rehype-katex formula parse error without exposing the formula', async () => {
+    await expect(render_markdown_preview('Before.\n$\\frac{1}{$')).rejects.toMatchObject({
       name: 'studio_validation_error',
-      issues: [{ code: 'invalid_math', field: 'markdown' }],
+      issues: [{ code: 'invalid_math', field: 'markdown.line_2.column_1', message: 'Markdown contains invalid LaTeX.' }],
     });
   });
 
-  it('rejects an unterminated display math delimiter without leaking its formula', async () => {
-    await expect(render_markdown_preview('$$\\frac{1}{2}')).rejects.toMatchObject({
+  it('reports the source location for unmatched delimiters without leaking their formula', async () => {
+    await expect(render_markdown_preview('Before.\n$$\\frac{1}{2}')).rejects.toMatchObject({
       name: 'studio_validation_error',
       message: 'Markdown contains invalid LaTeX.',
-      issues: [{ code: 'invalid_math', field: 'markdown' }],
+      issues: [{ code: 'invalid_math', field: 'markdown.line_2.column_1' }],
     });
   });
 
   it('rejects unmatched inline markers while leaving escaped dollars and code inert', async () => {
     await expect(render_markdown_preview('$x')).rejects.toMatchObject({
       name: 'studio_validation_error',
-      issues: [{ code: 'invalid_math', field: 'markdown' }],
+      issues: [{ code: 'invalid_math', field: 'markdown.line_1.column_1' }],
     });
     await expect(render_markdown_preview('$')).rejects.toMatchObject({
       name: 'studio_validation_error',
-      issues: [{ code: 'invalid_math', field: 'markdown' }],
+      issues: [{ code: 'invalid_math', field: 'markdown.line_1.column_1' }],
     });
     await expect(render_markdown_preview('Price: \\$5.')).resolves.toContain('Price: $5.');
     await expect(render_markdown_preview('`$x`\n\n```tex\n$$\\frac{1}{2}\n```')).resolves.toContain('<code');
