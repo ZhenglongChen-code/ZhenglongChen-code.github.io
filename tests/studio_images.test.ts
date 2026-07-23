@@ -1,0 +1,89 @@
+import sharp from 'sharp';
+import { describe, expect, it } from 'vitest';
+import {
+  build_article_object_key,
+  cleanup_created_images,
+  prepare_article_images,
+  publish_prepared_images,
+  rewrite_markdown_images,
+  type cos_adapter,
+} from '../src/lib/studio_images';
+
+const png_bytes = async (width = 8, height = 6, alpha = false): Promise<Uint8Array> => (
+  new Uint8Array(await sharp({ create: { width, height, channels: alpha ? 4 : 3, background: alpha ? { r: 1, g: 2, b: 3, alpha: 0.5 } : '#102030' } }).png().toBuffer())
+);
+const jpeg_bytes = async (): Promise<Uint8Array> => new Uint8Array(await sharp({ create: { width: 8, height: 6, channels: 3, background: '#102030' } }).jpeg().toBuffer());
+
+class fake_cos_adapter implements cos_adapter {
+  readonly objects = new Map<string, string>();
+  readonly uploads: string[] = [];
+  readonly deletes: string[] = [];
+  readonly delete_failures = new Set<string>();
+  async inspect_object(object_key: string): Promise<{ sha256: string } | undefined> { const sha256 = this.objects.get(object_key); return sha256 === undefined ? undefined : { sha256 }; }
+  async upload_object(input: { object_key: string; sha256: string }): Promise<void> { this.uploads.push(input.object_key); this.objects.set(input.object_key, input.sha256); }
+  async delete_object(object_key: string): Promise<void> { this.deletes.push(object_key); if (this.delete_failures.has(object_key)) throw new Error('delete failed'); this.objects.delete(object_key); }
+}
+
+describe('studio_images', () => {
+  it('builds a stable lower-case COS key under the configured prefix', () => {
+    expect(build_article_object_key({ root_prefix: 'latent-field', year: 2026, slug: 'vlm-evaluation', figure_number: 1, semantic_name: 'attention-map', extension: 'webp' })).toBe('latent-field/articles/2026/vlm-evaluation/fig-01-attention-map.webp');
+  });
+
+  it('rejects unsafe key components and public bases', () => {
+    for (const semantic_name of ['../x', 'a\\b', '/a', 'a//b', 'attention map', '注意力图', 'a\u0000b']) expect(() => build_article_object_key({ root_prefix: 'latent-field', year: 2026, slug: 'vlm-evaluation', figure_number: 1, semantic_name, extension: 'webp' })).toThrow(/invalid/i);
+    expect(() => build_article_object_key({ root_prefix: 'latent field', year: 2026, slug: 'vlm-evaluation', figure_number: 1, semantic_name: 'map', extension: 'gif' })).toThrow(/invalid/i);
+  });
+
+  it('normalizes photos to deterministic webp and retains intentional transparent diagrams as png', async () => {
+    const sources = [
+      { source_path: 'photo.jpg', bytes: await jpeg_bytes(), claimed_content_type: 'image/jpeg' as const, intent: 'photo' as const, semantic_name: 'attention-map' },
+      { source_path: 'diagram.png', bytes: await png_bytes(8, 6, true), claimed_content_type: 'image/png' as const, intent: 'diagram' as const, semantic_name: 'model-diagram' },
+    ];
+    const options = { root_prefix: 'latent-field', public_base_url: 'https://cdn.example.com/images', year: 2026, slug: 'vlm-evaluation', max_bytes: 1_000_000, max_pixels: 1_000_000 };
+    const first = await prepare_article_images(sources, options);
+    const second = await prepare_article_images(sources, options);
+    expect(first.images.map((image) => image.object_key)).toEqual(['latent-field/articles/2026/vlm-evaluation/fig-01-attention-map.webp', 'latent-field/articles/2026/vlm-evaluation/fig-02-model-diagram.png']);
+    expect(first.images[0]!.bytes).toEqual(second.images[0]!.bytes);
+    expect(first.images[0]!.content_type).toBe('image/webp');
+    expect(first.images[1]!.content_type).toBe('image/png');
+    expect((await sharp(first.images[1]!.bytes).metadata()).hasAlpha).toBe(true);
+  });
+
+  it('rejects MIME mismatch, corrupted files, unsupported input, and resource-limit violations', async () => {
+    const valid_png = await png_bytes();
+    const options = { root_prefix: 'latent-field', public_base_url: 'https://cdn.example.com', year: 2026, slug: 'vlm-evaluation', max_bytes: valid_png.length - 1, max_pixels: 10 };
+    await expect(prepare_article_images([{ source_path: 'x.png', bytes: valid_png, claimed_content_type: 'image/jpeg', intent: 'screenshot', semantic_name: 'x' }], options)).rejects.toMatchObject({ code: 'validation' });
+    await expect(prepare_article_images([{ source_path: 'x.png', bytes: new Uint8Array([1, 2, 3]), claimed_content_type: 'image/png', intent: 'screenshot', semantic_name: 'x' }], { ...options, max_bytes: 1000, max_pixels: 1000 })).rejects.toMatchObject({ code: 'validation' });
+    await expect(prepare_article_images([{ source_path: 'x.gif', bytes: valid_png, claimed_content_type: 'image/png', intent: 'screenshot', semantic_name: 'x' }], { ...options, max_bytes: 1000, max_pixels: 1000 })).rejects.toMatchObject({ code: 'validation' });
+    await expect(prepare_article_images([{ source_path: 'x.png', bytes: valid_png, claimed_content_type: 'image/png', intent: 'screenshot', semantic_name: 'x' }], options)).rejects.toMatchObject({ code: 'validation' });
+  });
+
+  it('rewrites only local image destinations, honoring definitions and Markdown syntax', () => {
+    const markdown = '![one](images/a(1).png) ![two](<images/a b.png>) ![ref][figure] ![again][FIGURE]\n\n[figure]: images/ref.png\n[figure]: ignored.png\n\n`![code](images/no.png)`\n\n```md\n![fence](images/nope.png)\n```';
+    const result = rewrite_markdown_images(markdown, new Map([
+      ['images/a(1).png', 'https://cdn.example.com/a.webp'], ['images/a b.png', 'https://cdn.example.com/b.webp'], ['images/ref.png', 'https://cdn.example.com/ref.webp'],
+    ]));
+    expect(result).toContain('![one](https://cdn.example.com/a.webp)');
+    expect(result).toContain('![two](<https://cdn.example.com/b.webp>)');
+    expect(result).toContain('[figure]: https://cdn.example.com/ref.webp');
+    expect(result).toContain('[figure]: ignored.png');
+    expect(result).toContain('`![code](images/no.png)`');
+    expect(result).toContain('![fence](images/nope.png)');
+  });
+
+  it('publishes immutable manifest entries, reuses matching objects, detects collisions, and cleans up only created keys', async () => {
+    const prepared = (await prepare_article_images([{ source_path: 'shot.png', bytes: await png_bytes(), claimed_content_type: 'image/png', intent: 'screenshot', semantic_name: 'screen' }], { root_prefix: 'latent-field', public_base_url: 'https://cdn.example.com/base', year: 2026, slug: 'vlm-evaluation', max_bytes: 1_000_000, max_pixels: 1_000_000 })).images;
+    const cos = new fake_cos_adapter();
+    const published = await publish_prepared_images(prepared, cos);
+    expect(published.manifest).toEqual([{ source_path: 'shot.png', object_key: prepared[0]!.object_key, public_url: prepared[0]!.public_url }]);
+    expect(published.objects[0]!.status).toBe('created');
+    const reused = await publish_prepared_images(prepared, cos);
+    expect(reused.objects[0]!.status).toBe('reused');
+    cos.objects.set(prepared[0]!.object_key, 'different');
+    await expect(publish_prepared_images(prepared, cos)).rejects.toMatchObject({ code: 'collision' });
+    cos.delete_failures.add(prepared[0]!.object_key);
+    const cleanup = await cleanup_created_images(published.objects, cos);
+    expect(cleanup.deleted).toEqual([]);
+    expect(cleanup.failures).toEqual([prepared[0]!.object_key]);
+  });
+});
