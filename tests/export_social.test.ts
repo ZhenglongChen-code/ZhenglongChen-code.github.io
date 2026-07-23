@@ -105,7 +105,7 @@ describe('export_social_articles', () => {
       'zeta/xiaohongshu.md',
       'zeta/zhihu.md',
     ]);
-    expect(first_tree['zeta/xiaohongshu.md']).toContain('https://example.test/writing/zeta');
+    expect(first_tree['zeta/xiaohongshu.md']).toContain('https://example.test/articles/zeta');
     expect(Object.keys(first_tree).some((path) => path.startsWith('draft/'))).toBe(false);
     expect(Object.keys(first_tree).some((path) => path.startsWith('english/'))).toBe(false);
 

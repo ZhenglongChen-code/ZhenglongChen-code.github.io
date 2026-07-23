@@ -9,10 +9,28 @@ export type dated_entry = {
   };
 };
 
+export type work_entry = {
+  id: string;
+  data: {
+    draft: boolean;
+    featured: boolean;
+    year: number;
+  };
+};
+
 export function get_public_posts<T extends dated_entry>(posts: T[]): T[] {
   return [...posts]
     .filter((post) => !post.data.draft)
     .sort((first_post, second_post) => second_post.data.date.getTime() - first_post.data.date.getTime());
+}
+
+export function get_public_work<T extends work_entry>(work_entries: readonly T[]): T[] {
+  return [...work_entries]
+    .filter((work_entry) => !work_entry.data.draft)
+    .sort((first_entry, second_entry) => (
+      Number(second_entry.data.featured) - Number(first_entry.data.featured)
+      || second_entry.data.year - first_entry.data.year
+    ));
 }
 
 export function find_translation<T extends dated_entry>(post: T, posts: T[]): T | undefined {

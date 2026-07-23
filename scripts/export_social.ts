@@ -17,6 +17,7 @@ import {
   format_zhihu,
   type social_article,
 } from '../src/lib/social_export';
+import { article_path } from '../src/lib/site_routes';
 
 type social_platforms = {
   zhihu: boolean;
@@ -208,13 +209,13 @@ function assert_safe_temporary_path(
   }
 }
 
-/** Constructs a canonical writing URL with an encoded single-segment slug. */
+/** Constructs a canonical public article URL with an encoded single-segment slug. */
 function build_canonical_url(site_url: URL, slug: string): string {
   if (!slug || basename(slug) !== slug) {
     throw new TypeError('Article slug must be one non-empty path segment.');
   }
 
-  return new URL(`/writing/${encodeURIComponent(slug)}`, site_url).toString();
+  return new URL(article_path(slug, 'zh'), site_url).toString();
 }
 
 /** Parses and validates one Markdown article without trusting raw frontmatter types. */

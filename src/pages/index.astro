@@ -3,18 +3,13 @@ import { getCollection as get_collection } from 'astro:content';
 import Post_list from '../components/post_list.astro';
 import Project_list from '../components/project_list.astro';
 import Base_layout from '../layouts/base_layout.astro';
-import { get_public_posts } from '../lib/content';
+import { get_public_posts, get_public_work } from '../lib/content';
 import { article_path } from '../lib/site_routes';
 
 const all_writing = await get_collection('writing');
 const public_writing = get_public_posts(all_writing);
 const all_work = await get_collection('work');
-const public_work = [...all_work]
-  .filter((work_entry) => !work_entry.data.draft)
-  .sort((first_entry, second_entry) => (
-    Number(second_entry.data.featured) - Number(first_entry.data.featured)
-    || second_entry.data.year - first_entry.data.year
-  ));
+const public_work = get_public_work(all_work);
 const selected_work = public_work.filter((work_entry) => work_entry.data.featured);
 const featured_post = public_writing.find((writing_entry) => writing_entry.data.featured);
 const latest_writing = public_writing

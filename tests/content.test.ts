@@ -3,6 +3,7 @@ import { resolve as resolve_path } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   find_translation,
+  get_public_work,
   get_public_posts,
   group_posts_by_tag,
   validate_translation_pairs,
@@ -28,6 +29,31 @@ describe('get_public_posts', () => {
     ];
 
     expect(get_public_posts(posts).map((post) => post.id)).toEqual(['newer', 'older']);
+  });
+});
+
+describe('get_public_work', () => {
+  it('removes drafts and returns featured work before newer work without mutating the input', () => {
+    const work_entries = [
+      { id: 'older-featured', data: { draft: false, featured: true, year: 2024 } },
+      { id: 'newer', data: { draft: false, featured: false, year: 2026 } },
+      { id: 'draft', data: { draft: true, featured: true, year: 2027 } },
+      { id: 'newer-featured', data: { draft: false, featured: true, year: 2026 } },
+    ];
+
+    const public_work = get_public_work(work_entries);
+
+    expect(public_work.map((work_entry) => work_entry.id)).toEqual([
+      'newer-featured',
+      'older-featured',
+      'newer',
+    ]);
+    expect(work_entries.map((work_entry) => work_entry.id)).toEqual([
+      'older-featured',
+      'newer',
+      'draft',
+      'newer-featured',
+    ]);
   });
 });
 
@@ -103,5 +129,18 @@ describe('public identity source', () => {
     for (const former_public_name of former_public_names) {
       expect(public_sources.join('\n')).not.toContain(former_public_name);
     }
+  });
+});
+
+describe('site header source', () => {
+  it('uses English semantics for the public English navigation', async () => {
+    const source = await read_file(
+      resolve_path(process.cwd(), 'src/components/site_header.astro'),
+      'utf8',
+    );
+
+    expect(source).toContain('<header class="site_header shell" lang="en">');
+    expect(source).toContain('aria-label="ChenZL, return home"');
+    expect(source).toContain('aria-label="Primary navigation"');
   });
 });

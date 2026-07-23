@@ -2,14 +2,11 @@
 import { getCollection as get_collection } from 'astro:content';
 import Project_list from '../components/project_list.astro';
 import Base_layout from '../layouts/base_layout.astro';
+import { get_public_work } from '../lib/content';
 
 const work_entries = await get_collection('work');
-const public_research = [...work_entries]
-  .filter((work_entry) => !work_entry.data.draft && work_entry.data.kind === 'research')
-  .sort((first_entry, second_entry) => (
-    Number(second_entry.data.featured) - Number(first_entry.data.featured)
-    || second_entry.data.year - first_entry.data.year
-  ));
+const public_research = get_public_work(work_entries)
+  .filter((work_entry) => work_entry.data.kind === 'research');
 ---
 
 <Base_layout

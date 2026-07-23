@@ -58,6 +58,18 @@ mkdir -p "$legacy_work_fixture/dist/work"
 printf '<html>ChenZL</html>\n' >"$legacy_work_fixture/dist/work/index.html"
 assert_failure 'legacy work output must be rejected' run_checker "$legacy_work_fixture"
 
+legacy_writing_fixture="$test_root/legacy_writing"
+make_fixture "$legacy_writing_fixture"
+mkdir -p "$legacy_writing_fixture/dist/writing"
+printf '<html>ChenZL</html>\n' >"$legacy_writing_fixture/dist/writing/index.html"
+assert_failure 'legacy writing output must be rejected' run_checker "$legacy_writing_fixture"
+
+legacy_english_writing_fixture="$test_root/legacy_english_writing"
+make_fixture "$legacy_english_writing_fixture"
+mkdir -p "$legacy_english_writing_fixture/dist/en/writing"
+printf '<html>ChenZL</html>\n' >"$legacy_english_writing_fixture/dist/en/writing/index.html"
+assert_failure 'legacy English writing output must be rejected' run_checker "$legacy_english_writing_fixture"
+
 chinese_leak_fixture="$test_root/chinese_leak"
 make_fixture "$chinese_leak_fixture"
 printf '<html>陈正龙</html>\n' >"$chinese_leak_fixture/dist/articles/leak.html"

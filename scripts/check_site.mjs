@@ -11,7 +11,7 @@ const required_paths = [
   'dist/rss.xml',
   'dist/404.html',
 ];
-const retired_paths = ['dist/work'];
+const retired_paths = ['dist/work', 'dist/writing', 'dist/en/writing'];
 
 const social_export_extensions = new Set(['.html', '.md', '.txt']);
 
