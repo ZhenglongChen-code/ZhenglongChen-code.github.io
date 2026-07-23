@@ -146,7 +146,7 @@ export class local_git_adapter implements git_adapter {
     if (!slug_pattern.test(input.slug) || !commit_message_pattern.test(input.commit_message) || input.commit_message.startsWith('-') || !safe_branch_token(this.publication_branch) || !safe_remote_token(this.remote_name) || !writing_directory_pattern.test(this.writing_directory)) return { ok: false, code: 'validation', message: 'Invalid publication input or configuration.' };
     if (input.operation === 'publish_update' && (!input.expected_source_hash || !/^[a-f0-9]{64}$/.test(input.expected_source_hash))) return { ok: false, code: 'validation', message: 'An update requires a SHA-256 expected_source_hash.' };
     if (input.expected_baseline_sha !== undefined && !/^[a-f0-9]{40}$/.test(input.expected_baseline_sha)) return { ok: false, code: 'validation', message: 'The expected Git baseline is invalid.' };
-    let commit_created = false; let retained_sha: string | undefined;
+    let mutation_started = false; let commit_created = false; let retained_sha: string | undefined;
     try {
       const configured_root = canonical_root;
       const git_root = await realpath(await this.run_git('rev-parse', '--show-toplevel'));
@@ -182,6 +182,7 @@ export class local_git_adapter implements git_adapter {
       }
       const old_head = await this.run_git('rev-parse', 'HEAD');
       if (input.expected_baseline_sha !== undefined && old_head !== input.expected_baseline_sha) return { ok: false, code: 'baseline_changed', message: 'Publication branch advanced after the Studio baseline was captured; no Git changes were made.' };
+      mutation_started = true;
       await this.atomic_write(target, input.source, writing_identity, target_stat?.mode);
       await this.run_git('add', '--', relative_path);
       await this.run_git('commit', '--only', '-m', input.commit_message, '--', relative_path); commit_created = true;
@@ -189,10 +190,7 @@ export class local_git_adapter implements git_adapter {
       if (input.expected_baseline_sha !== undefined && (await this.run_git('show', '-s', '--format=%P', commit_sha)) !== input.expected_baseline_sha) return { ok: false, code: 'critical_recovery_failed', commit_retained: true, commit_sha, message: 'The Studio commit parent changed after its baseline check; the local commit was retained and was not pushed.' };
       const changed = (await this.run_git('diff-tree', '--no-commit-id', '--name-only', '-r', 'HEAD')).split('\n').filter(Boolean);
       if (changed.length !== 1 || changed[0] !== relative_path || !this.bytes_equal(await this.committed_bytes(commit_sha, relative_path), input.source)) {
-        try {
-          await this.run_git('update-ref', `refs/heads/${this.publication_branch}`, old_head, commit_sha);
-          return { ok: false, code: 'integrity_failed', message: 'Committed article integrity verification failed; the unpublished branch ref was restored.' };
-        } catch { return { ok: false, code: 'critical_recovery_failed', commit_retained: true, commit_sha, message: 'Committed article integrity failed; do not push. Manually inspect and restore the publication branch ref.' }; }
+        return { ok: false, code: 'critical_recovery_failed', commit_retained: true, commit_sha, message: 'Committed article integrity failed; the local commit was retained and was not pushed.' };
       }
       try {
         const remote_ref = `refs/heads/${this.publication_branch}`;
@@ -202,7 +200,7 @@ export class local_git_adapter implements git_adapter {
         return { ok: true, path: relative_path, commit_retained: true, commit_sha, push_status: 'pushed' };
       }
       catch { return { ok: false, code: 'push_failed', message: 'Push failed after the local article commit was created.', commit_retained: true, commit_sha, committed_paths: [relative_path], recovery: 'Local commit was kept. Fetch the remote branch, resolve divergence, then push normally without force.' }; }
-    } catch { return commit_created ? { ok: false, code: 'critical_recovery_failed', commit_retained: true, ...(retained_sha === undefined ? {} : { commit_sha: retained_sha }), message: 'A local commit may have been retained after Git verification failed; do not clean images or push until inspected.' } : { ok: false, code: 'git_failed', message: 'Git publication failed; inspect the local repository state and retry.' }; }
+    } catch { return mutation_started || commit_created ? { ok: false, code: 'critical_recovery_failed', commit_retained: true, ...(retained_sha === undefined ? {} : { commit_sha: retained_sha }), message: 'Studio may have left Markdown or index changes after Git verification failed; do not clean images or push until inspected.' } : { ok: false, code: 'git_failed', message: 'Git publication failed; inspect the local repository state and retry.' }; }
   }
 
   private async path_dirty(relative_path: string): Promise<boolean> {

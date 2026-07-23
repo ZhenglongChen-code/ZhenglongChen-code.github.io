@@ -237,13 +237,14 @@ describe('local_git_adapter', () => {
     expect(await git(root, 'ls-files', '-u')).not.toBe('');
   });
 
-  it('detects a hook-mutated committed blob and snapshots caller bytes before delayed commands', async () => {
+  it('retains a hook-mutated committed blob and snapshots caller bytes before delayed commands', async () => {
     const { root, remote } = await make_repository();
     const hook = join(root, '.git/hooks/pre-commit'); await writeFile(hook, '#!/bin/sh\nprintf changed > src/content/writing/hooked.md\ngit add -- src/content/writing/hooked.md\n'); await (await import('node:fs/promises')).chmod(hook, 0o755);
     const adapter = new local_git_adapter({ repository_root: root, publication_branch: 'main', remote_name: 'origin', writing_directory: 'src/content/writing' }); const before = await git(root, 'rev-parse', 'HEAD'); const remote_before = await git(remote, 'rev-parse', 'main');
-    await expect(adapter.publish({ operation: 'publish_new', slug: 'hooked', source: new TextEncoder().encode('original'), commit_message: 'Publish hooked' })).resolves.toMatchObject({ ok: false, code: 'integrity_failed' });
-    expect(await git(root, 'rev-parse', 'HEAD')).toBe(before); expect(await git(remote, 'rev-parse', 'main')).toBe(remote_before); expect(await git(root, 'status', '--porcelain', '--', 'src/content/writing/hooked.md')).not.toBe('');
-    await expect(adapter.publish({ operation: 'publish_update', slug: 'hooked', source: new TextEncoder().encode('retry'), expected_source_hash: '0'.repeat(64), commit_message: 'Retry hooked' })).resolves.toMatchObject({ ok: false, code: 'target_dirty' }); expect(await git(root, 'rev-parse', 'HEAD')).toBe(before);
+    const mutated = await adapter.publish({ operation: 'publish_new', slug: 'hooked', source: new TextEncoder().encode('original'), commit_message: 'Publish hooked' });
+    expect(mutated).toMatchObject({ ok: false, code: 'critical_recovery_failed', commit_retained: true, commit_sha: expect.stringMatching(/^[a-f0-9]{40}$/) }); if (mutated.ok || mutated.code !== 'critical_recovery_failed' || !mutated.commit_sha) throw new Error('Mutated commit was not retained.');
+    expect(await git(root, 'rev-parse', 'HEAD')).toBe(mutated.commit_sha); expect(await git(remote, 'rev-parse', 'main')).toBe(remote_before); expect(await readFile(join(root, 'src/content/writing/hooked.md'), 'utf8')).toBe('changed');
+    await expect(adapter.publish({ operation: 'publish_update', slug: 'hooked', source: new TextEncoder().encode('retry'), expected_source_hash: '0'.repeat(64), commit_message: 'Retry hooked' })).resolves.toMatchObject({ ok: false, code: 'target_dirty' }); expect(await git(root, 'rev-parse', 'HEAD')).not.toBe(before);
     await rm(hook);
     let delayed = false;
     const runner: git_command_runner = async (file, args, cwd) => { if (args[0] === 'rev-parse' && !delayed) { delayed = true; await new Promise<void>((resolve_delay) => setTimeout(resolve_delay, 25)); } const output = await exec_file_async(file, [...args], { cwd }); return { stdout: output.stdout, stderr: output.stderr }; };
@@ -260,11 +261,10 @@ describe('local_git_adapter', () => {
     expect(await git(root, 'diff', '--name-only')).toBe('README.md'); expect(await git(root, 'diff', '--cached', '--name-only')).toBe('staged.md'); expect(await readFile(join(root, 'untracked.md'), 'utf8')).toBe('untracked\n'); expect(await git(root, 'show', '--format=', '--name-only', 'HEAD')).toBe('src/content/writing/only.md');
   });
 
-  it('returns critical recovery failure without push when conditional ref quarantine fails', async () => {
+  it('returns critical recovery failure without push when a hook changes committed bytes', async () => {
     const { root, remote } = await make_repository(); const remote_before = await git(remote, 'rev-parse', 'main');
     const hook = join(root, '.git/hooks/pre-commit'); await writeFile(hook, '#!/bin/sh\nprintf leaked-content > src/content/writing/critical.md\ngit add -- src/content/writing/critical.md\n'); await (await import('node:fs/promises')).chmod(hook, 0o755);
-    const runner: git_command_runner = async (file, args, cwd) => { if (args[0] === 'update-ref') throw new Error('ref failure leaked-content'); const output = await exec_file_async(file, [...args], { cwd }); return { stdout: output.stdout, stderr: output.stderr }; };
-    const adapter = new local_git_adapter({ repository_root: root, publication_branch: 'main', remote_name: 'origin', writing_directory: 'src/content/writing', command_runner: runner });
+    const adapter = new local_git_adapter({ repository_root: root, publication_branch: 'main', remote_name: 'origin', writing_directory: 'src/content/writing' });
     const result = await adapter.publish({ operation: 'publish_new', slug: 'critical', source: new TextEncoder().encode('safe'), commit_message: 'Publish critical' });
     expect(result).toMatchObject({ ok: false, code: 'critical_recovery_failed' }); if (!result.ok) expect(result.message).not.toContain('leaked-content'); expect(await git(remote, 'rev-parse', 'main')).toBe(remote_before);
   });

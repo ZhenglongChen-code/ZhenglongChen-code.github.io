@@ -1,11 +1,18 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { execFile as exec_file } from 'node:child_process';
+import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 import { validate_studio_request } from '../src/lib/studio_protocol';
 import { cleanup_studio_transaction, publish_article, reconcile_studio_git_transaction, recover_stale_studio_claim } from '../src/lib/studio_publish';
-import type { git_publish_input } from '../src/lib/studio_git';
+import { local_git_adapter, type git_command_runner, type git_publish_input } from '../src/lib/studio_git';
+
+const exec_file_async = promisify(exec_file);
+
+/** Runs Git while setting up an isolated publication repository. */
+const git = async (cwd: string, ...args: string[]): Promise<string> => (await exec_file_async('git', args, { cwd })).stdout.trim();
 
 describe('studio protocol', () => {
   it('rejects unsafe request ids before publication work', () => {
@@ -24,6 +31,26 @@ describe('studio publication', () => {
   const with_baseline = <T extends object>(adapter: T): T & { capture_baseline: () => Promise<typeof captured_baseline> } => ({ capture_baseline: async () => captured_baseline, ...adapter });
   const publication_dependencies = (root: string, cos: { verify_versioning: () => Promise<void>; inspect_object: (object_key: string) => Promise<{ sha256: string; version_id?: string; studio_request_id?: string } | undefined>; upload_object: (image: typeof prepared, studio_request_id: string) => Promise<{ version_id: string }>; delete_object: (object_key: string, version_id: string) => Promise<void> }, git?: { capture_baseline: () => Promise<typeof captured_baseline>; publish: () => Promise<{ ok: true; path: string; commit_sha: string; push_status: 'pushed' }> }) => ({ journal_root: root, public_site_url: 'https://site.example', image_options: { root_prefix: 'site', public_base_url: 'https://assets.example', max_bytes: 10, max_pixels: 10, max_width: 10, max_height: 10 }, cos, prepare_images: async () => [prepared], git: git ?? with_baseline({ publish: async () => ({ ok: true as const, path: 'src/content/writing/post.md', commit_sha: 'c'.repeat(40), push_status: 'pushed' as const }) }) });
   const request_hash = (input = request): string => createHash('sha256').update(JSON.stringify({ protocol_version: 1, request_id: input.request_id, slug: input.slug, year: input.year, markdown: input.markdown, metadata: input.metadata, images: [{ source_path: 'figure.png', bytes: prepared.sha256, claimed_content_type: 'image/png', intent: 'diagram', semantic_name: 'figure' }], kind: input.kind, commit_message: input.commit_message })).digest('hex');
+
+  /** Creates a real repository and remote used to exercise post-write Git failures. */
+  const make_publication_repository = async (root: string, command_runner?: git_command_runner): Promise<{ working: string; adapter: local_git_adapter }> => {
+    const remote = join(root, 'remote.git'); const working = join(root, 'working');
+    await git(root, 'init', '--bare', remote); await git(root, 'clone', remote, working); await git(working, 'config', 'user.email', 'test@example.com'); await git(working, 'config', 'user.name', 'Studio Test'); await git(working, 'checkout', '-b', 'main'); await mkdir(join(working, 'src/content/writing'), { recursive: true }); await writeFile(join(working, 'README.md'), 'seed\n'); await git(working, 'add', '--', 'README.md'); await git(working, 'commit', '-m', 'seed'); await git(working, 'push', 'origin', 'main');
+    return { working, adapter: new local_git_adapter({ repository_root: working, publication_branch: 'main', remote_name: 'origin', writing_directory: 'src/content/writing', ...(command_runner === undefined ? {} : { command_runner }) }) };
+  };
+
+  /** Runs a real post-write Git failure through the publisher and records its retained-resource outcome. */
+  const run_mutation_failure = async (operation: 'publish_new' | 'publish_update', failure: 'hook' | 'add' | 'commit'): Promise<{ result: Awaited<ReturnType<typeof publish_article>>; replay: Awaited<ReturnType<typeof publish_article>>; uploads: number; deletes: number; target: string }> => {
+    const root = await journal_root(); const target_path = 'src/content/writing/post.md';
+    const runner: git_command_runner | undefined = failure === 'hook' ? undefined : async (file, args, cwd) => { if (args[0] === failure) throw new Error(`injected ${failure} failure`); const output = await exec_file_async(file, [...args], { cwd }); return { stdout: output.stdout, stderr: output.stderr }; };
+    const { working, adapter } = await make_publication_repository(root, runner); const target = join(working, target_path);
+    let publication_request: unknown = request;
+    if (operation === 'publish_update') { await writeFile(target, 'old article\n'); await git(working, 'add', '--', target_path); await git(working, 'commit', '-m', 'seed article'); await git(working, 'push', 'origin', 'main'); publication_request = { ...request, kind: 'publish_update', expected_source_hash: createHash('sha256').update(await readFile(target)).digest('hex') }; }
+    if (failure === 'hook') { const hook = join(working, '.git', 'hooks', 'pre-commit'); await writeFile(hook, '#!/bin/sh\nexit 1\n'); await chmod(hook, 0o755); }
+    let uploads = 0; let deletes = 0; const dependencies = { ...publication_dependencies(root, { verify_versioning: async () => undefined, inspect_object: async () => undefined, upload_object: async () => { uploads += 1; return { version_id: 'v1' }; }, delete_object: async () => { deletes += 1; } }), git: adapter };
+    const result = await publish_article(publication_request, dependencies); const replay = await publish_article(publication_request, dependencies);
+    return { result, replay, uploads, deletes, target };
+  };
 
   it('reconciles a pending upload only when COS metadata names this request and exact version', async () => {
     const root = await journal_root();
@@ -73,6 +100,31 @@ describe('studio publication', () => {
   it('retains created images when Git retains a critical post-commit recovery state', async () => {
     let cleanup_calls = 0; let uploads = 0; const result = await publish_article(request, { ...publication_dependencies(await journal_root(), { verify_versioning: async () => undefined, inspect_object: async () => undefined, upload_object: async () => { uploads += 1; return { version_id: 'v1' }; }, delete_object: async () => { cleanup_calls += 1; } }), git: with_baseline({ publish: async () => ({ ok: false as const, code: 'critical_recovery_failed' as const, commit_retained: true as const, message: 'parent changed', commit_sha: 'e'.repeat(40) }) }) });
     expect(result).toMatchObject({ kind: 'committed_local' }); expect(uploads).toBe(1); expect(cleanup_calls).toBe(0);
+  });
+  it('retains assets and requires recovery when a pre-commit hook rejects new or update publication', async () => {
+    for (const operation of ['publish_new', 'publish_update'] as const) {
+      const outcome = await run_mutation_failure(operation, 'hook');
+      expect(outcome.result).toMatchObject({ kind: 'recovery_required', errors: [{ code: 'git_ambiguous' }] }); expect(outcome.replay).toMatchObject({ kind: 'recovery_required' }); expect(outcome.uploads).toBe(1); expect(outcome.deletes).toBe(0); await expect(readFile(outcome.target, 'utf8')).resolves.toContain('title: Post');
+    }
+  });
+  it('retains assets and requires recovery when Git add or commit fails after Markdown mutation', async () => {
+    for (const failure of ['add', 'commit'] as const) {
+      for (const operation of ['publish_new', 'publish_update'] as const) {
+        const outcome = await run_mutation_failure(operation, failure);
+        expect(outcome.result).toMatchObject({ kind: 'recovery_required', errors: [{ code: 'git_ambiguous' }] }); expect(outcome.replay).toMatchObject({ kind: 'recovery_required' }); expect(outcome.uploads).toBe(1); expect(outcome.deletes).toBe(0); await expect(readFile(outcome.target, 'utf8')).resolves.toContain('title: Post');
+      }
+    }
+  });
+  it('rejects insecure or malformed publication URLs before any adapter call', async () => {
+    for (const public_site_url of ['http://site.example', 'https://user:password@site.example/', 'https://site.example/?query=1', 'https://site.example/#fragment', 'not a URL']) {
+      const root = await journal_root(); let calls = 0;
+      const result = await publish_article(request, { ...publication_dependencies(root, { verify_versioning: async () => { calls += 1; }, inspect_object: async () => { calls += 1; return undefined; }, upload_object: async () => { calls += 1; return { version_id: 'v1' }; }, delete_object: async () => { calls += 1; } }), public_site_url, prepare_images: async () => { calls += 1; return [prepared]; }, git: { capture_baseline: async () => { calls += 1; return captured_baseline; }, publish: async () => { calls += 1; return { ok: true as const, path: 'x', commit_sha: 'c'.repeat(40), push_status: 'pushed' as const }; } } });
+      expect(result).toMatchObject({ kind: 'failed', errors: [{ code: 'not_publishable' }] }); expect(calls).toBe(0); await expect(readFile(join(root, '.studio', 'transactions', `${request.request_id}.json`))).rejects.toMatchObject({ code: 'ENOENT' });
+    }
+  });
+  it('preserves a GitHub Pages base path in the published article URL', async () => {
+    const result = await publish_article(request, { ...publication_dependencies(await journal_root(), { verify_versioning: async () => undefined, inspect_object: async () => undefined, upload_object: async () => ({ version_id: 'v1' }), delete_object: async () => undefined }), public_site_url: 'https://owner.github.io/personal-site/' });
+    expect(result).toMatchObject({ kind: 'published', public_url: 'https://owner.github.io/personal-site/articles/post/' });
   });
   it('uses metadata form values when serializing frontmatter', async () => {
     let source = ''; const changed = { ...request, request_id: '11111111111111111111111111111111', metadata: { ...request.metadata, featured: true, translation: 'en-post', social: { zhihu: false, wechat: true, xiaohongshu: false } } };

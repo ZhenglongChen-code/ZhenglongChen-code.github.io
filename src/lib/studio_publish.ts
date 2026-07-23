@@ -29,12 +29,25 @@ const request_id_pattern = /^(?:[a-f0-9]{32}|[a-f0-9]{64}|[a-f0-9]{8}-(?:[a-f0-9
 const sha256_pattern = /^[a-f0-9]{64}$/;
 const commit_sha_pattern = /^[a-f0-9]{40}$/;
 const target_path_pattern = /^src\/content\/writing\/([a-z0-9]+(?:-[a-z0-9]+)*)\.md$/;
+const public_site_path_pattern = /^\/(?:[A-Za-z0-9][A-Za-z0-9._~-]*(?:\/[A-Za-z0-9][A-Za-z0-9._~-]*)*)?\/?$/;
 
 /** Produces a stable SHA-256 identity without retaining draft contents in the journal. */
 const sha256 = (value: Uint8Array | string): string => createHash('sha256').update(value).digest('hex');
 
 /** Produces a structured Studio response error. */
 const issue = (code: string, message: string, field?: string): studio_error => ({ code, message, ...(field === undefined ? {} : { field }) });
+
+/** Validates and canonicalizes the HTTPS site base used in durable public publication responses. */
+const canonical_public_site_url = (value: string): string | undefined => {
+  let parsed: URL;
+  try { parsed = new URL(value); } catch { return undefined; }
+  if (parsed.protocol !== 'https:' || !parsed.hostname || parsed.username || parsed.password || parsed.search || parsed.hash || !public_site_path_pattern.test(parsed.pathname)) return undefined;
+  const base_path = parsed.pathname.endsWith('/') ? parsed.pathname : `${parsed.pathname}/`;
+  return `${parsed.origin}${base_path}`;
+};
+
+/** Builds a validated article URL without allowing the article path to discard a configured site subpath. */
+const article_public_url = (public_site_url: string, slug: string): string => `${public_site_url}articles/${slug}/`;
 
 /** Produces a failed response with an optional exact-version cleanup report. */
 const failed = (errors: studio_error[], cleanup?: cleanup_result): studio_response => ({ protocol_version: 1, kind: 'failed', errors, ...(cleanup === undefined ? {} : { cleanup }) });
@@ -263,8 +276,10 @@ export const reconcile_studio_git_transaction = async (journal_root: string, req
       return result;
     }
     if (inspected.state === 'pushed') {
-      if (!commit_sha_pattern.test(inspected.commit_sha) || !dependencies.public_site_url) return recovery('git_ambiguous', 'Git inspection could not produce a publishable commit and site URL.');
-      const public_url = new URL(`/articles/${target_path_pattern.exec(current.target_path)?.[1] ?? ''}/`, dependencies.public_site_url).toString();
+      const public_site_url = dependencies.public_site_url === undefined ? undefined : canonical_public_site_url(dependencies.public_site_url);
+      const slug = target_path_pattern.exec(current.target_path)?.[1];
+      if (!commit_sha_pattern.test(inspected.commit_sha) || !public_site_url || !slug) return recovery('git_ambiguous', 'Git inspection could not produce a publishable commit and site URL.');
+      const public_url = article_public_url(public_site_url, slug);
       const result: studio_response = { protocol_version: 1, kind: 'published', public_url, commit_sha: inspected.commit_sha };
       await write_journal(path, { ...current, phase: 'pushed', status: 'completed', commit_sha: inspected.commit_sha, result }, dependencies.runtime);
       return result;
@@ -324,9 +339,11 @@ export const publish_article = async (input: unknown, dependencies: studio_publi
     try { await validate(request); return { protocol_version: 1, kind: 'preview', publishable: false, errors: [issue('preview_only', 'Preview requests are not publishable.')] }; }
     catch (cause: unknown) { return { protocol_version: 1, kind: 'preview', publishable: false, errors: cause instanceof studio_protocol_error ? cause.errors : [issue('validation', 'Preview validation failed.')] }; }
   }
-  if (!dependencies.image_options || !dependencies.git || !dependencies.public_site_url || !dependencies.cos) return failed([issue('not_publishable', 'Publishing is not configured locally.')]);
+  const public_site_url = dependencies.public_site_url === undefined ? undefined : canonical_public_site_url(dependencies.public_site_url);
+  if (!dependencies.image_options || !dependencies.git || !public_site_url || !dependencies.cos) return failed([issue('not_publishable', 'Publishing is not configured locally.')]);
   const snapshot = snapshot_request(request);
   if (snapshot.kind === 'preview') return recovery('invalid_request', 'Preview requests cannot enter publication flow.');
+  const public_url = article_public_url(public_site_url, snapshot.slug);
   const hash = payload_hash(snapshot); const root = resolve(dependencies.journal_root); const queue_key = `${root}:${snapshot.request_id}`;
   const previous = queues.get(queue_key) ?? Promise.resolve(); let release_queue: (() => void) | undefined;
   const gate = new Promise<void>((resolve_gate) => { release_queue = resolve_gate; }); const tail = previous.then(() => gate); queues.set(queue_key, tail); await previous;
@@ -430,7 +447,7 @@ export const publish_article = async (input: unknown, dependencies: studio_publi
     const committed: journal = { ...current, phase: 'committed', commit_sha: git_result.commit_sha };
     try { await write_journal(path, committed, dependencies.runtime); }
     catch { return { protocol_version: 1, kind: 'committed_local', commit_sha: git_result.commit_sha, recovery: 'Git succeeded but transaction finalization was not durable; inspect the journal before retrying.' }; }
-    const public_url = new URL(`/articles/${snapshot.slug}/`, dependencies.public_site_url).toString(); let deployment_advisory: string | undefined;
+    let deployment_advisory: string | undefined;
     try { await dependencies.deployment?.report({ public_url, commit_sha: git_result.commit_sha }); } catch { deployment_advisory = 'Deployment status could not be confirmed.'; }
     const result: studio_response = { protocol_version: 1, kind: 'published', public_url, commit_sha: git_result.commit_sha, ...(deployment_advisory === undefined ? {} : { deployment_advisory }) };
     try { await write_journal(path, { ...committed, phase: 'pushed', status: 'completed', result }, dependencies.runtime); }
