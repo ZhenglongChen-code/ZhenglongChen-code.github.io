@@ -25,6 +25,10 @@ type markdown_file = {
   messages: ReadonlyArray<{ source?: string }>;
 };
 
+type markdown_position = {
+  offset?: unknown;
+};
+
 /** Fails the shared pipeline when rehype-katex reports a formula parse error. */
 const rehype_reject_invalid_math = () => (_tree: unknown, file: markdown_file): void => {
   if (file.messages.some((message) => message.source === 'rehype-katex')) {
@@ -42,6 +46,7 @@ const preview_renderer = create_markdown_processor(markdown_processor_options);
 type markdown_node = {
   children?: unknown;
   identifier?: unknown;
+  position?: { end?: markdown_position; start?: markdown_position };
   type?: unknown;
   url?: unknown;
   value?: unknown;
@@ -112,6 +117,58 @@ const find_unsafe_html = (markdown: string): string | undefined => {
   return undefined;
 };
 
+/** Returns the exact source range represented by a source-positioned Markdown node. */
+const markdown_source = (markdown: string, node: markdown_node): string | undefined => {
+  const start = node.position?.start?.offset;
+  const end = node.position?.end?.offset;
+  if (typeof start !== 'number' || typeof end !== 'number' || !Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end < start || end > markdown.length) return undefined;
+  return markdown.slice(start, end);
+};
+
+/** Checks that a flow-math node has a real closing fence instead of relying on end-of-file recovery. */
+const has_closing_math_fence = (source: string): boolean => {
+  const lines = source.split(/\r?\n/u);
+  const opening = lines[0]?.match(/^[ \t]{0,3}(\${2,})/u)?.[1];
+  const closing = lines.at(-1)?.match(/^[ \t]{0,3}(\${2,})[ \t]*$/u)?.[1];
+  return opening !== undefined && closing !== undefined && lines.length > 1 && closing.length >= opening.length;
+};
+
+/** Identifies unescaped math-marker runs left as text after Markdown tokenization. */
+const contains_unmatched_math_marker = (source: string): boolean => {
+  for (let index = 0; index < source.length; index += 1) {
+    if (source[index] !== '$') continue;
+    let escape_count = 0;
+    for (let previous = index - 1; source[previous] === '\\'; previous -= 1) escape_count += 1;
+    if (escape_count % 2 === 1) continue;
+    return true;
+  }
+  return false;
+};
+
+/** Detects unmatched math fences and inline markers while preserving Markdown code contexts. */
+const has_invalid_math_delimiter = (markdown: string): boolean => {
+  const markdown_tree = unified_processor().use(remark_parse).use(remark_math).parse(markdown);
+  let invalid = false;
+  const inspect_node = (current_node: unknown): void => {
+    if (invalid || typeof current_node !== 'object' || current_node === null) return;
+    const markdown_node = current_node as markdown_node;
+    const source = markdown_source(markdown, markdown_node);
+    if (markdown_node.type === 'math' && source !== undefined && !has_closing_math_fence(source)) {
+      invalid = true;
+      return;
+    }
+    if (markdown_node.type === 'text' && source !== undefined && contains_unmatched_math_marker(source)) {
+      invalid = true;
+      return;
+    }
+    if (Array.isArray(markdown_node.children)) {
+      for (const child of markdown_node.children) inspect_node(child);
+    }
+  };
+  inspect_node(markdown_tree);
+  return invalid;
+};
+
 /** Renders prevalidated Markdown with the same math extensions used by Astro's static build. */
 export const render_markdown_preview = async (markdown: string): Promise<string> => {
   const unsafe_html = find_unsafe_html(markdown);
@@ -119,6 +176,13 @@ export const render_markdown_preview = async (markdown: string): Promise<string>
     throw new studio_validation_error([{
       code: 'unsafe_html',
       message: `Preview contains unsafe HTML (${unsafe_html}) that the sanitizer would remove.`,
+    }]);
+  }
+  if (has_invalid_math_delimiter(markdown)) {
+    throw new studio_validation_error([{
+      code: 'invalid_math',
+      field: 'markdown',
+      message: 'Markdown contains invalid LaTeX.',
     }]);
   }
   try {

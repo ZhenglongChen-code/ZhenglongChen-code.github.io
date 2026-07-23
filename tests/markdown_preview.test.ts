@@ -31,6 +31,27 @@ describe('render_markdown_preview', () => {
     });
   });
 
+  it('rejects an unterminated display math delimiter without leaking its formula', async () => {
+    await expect(render_markdown_preview('$$\\frac{1}{2}')).rejects.toMatchObject({
+      name: 'studio_validation_error',
+      message: 'Markdown contains invalid LaTeX.',
+      issues: [{ code: 'invalid_math', field: 'markdown' }],
+    });
+  });
+
+  it('rejects unmatched inline markers while leaving escaped dollars and code inert', async () => {
+    await expect(render_markdown_preview('$x')).rejects.toMatchObject({
+      name: 'studio_validation_error',
+      issues: [{ code: 'invalid_math', field: 'markdown' }],
+    });
+    await expect(render_markdown_preview('$')).rejects.toMatchObject({
+      name: 'studio_validation_error',
+      issues: [{ code: 'invalid_math', field: 'markdown' }],
+    });
+    await expect(render_markdown_preview('Price: \\$5.')).resolves.toContain('Price: $5.');
+    await expect(render_markdown_preview('`$x`\n\n```tex\n$$\\frac{1}{2}\n```')).resolves.toContain('<code');
+  });
+
   it('rejects executable raw HTML instead of silently removing it', async () => {
     await expect(render_markdown_preview('<img src=x onerror="alert(1)">')).rejects.toMatchObject({
       name: 'studio_validation_error',
