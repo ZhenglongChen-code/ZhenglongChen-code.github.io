@@ -32,7 +32,7 @@ const public_url = (base: string, object_key: string): string => {
   let parsed: URL;
   try { parsed = new URL(base); } catch { return invalid('Invalid public base URL.'); }
   const raw_path = base.replace(/^https:\/\/[^/]+/, '');
-  if (base.trim() !== base || /%(?:2f|5c|2e)/i.test(base) || parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.search || parsed.hash || /\/(?:\.{1,2})(?:\/|$)/.test(raw_path) || raw_path.includes('//')) invalid('Invalid public base URL.');
+  if (base.trim() !== base || base.includes('\\') || /%(?:2f|5c|2e)/i.test(base) || parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.search || parsed.hash || /\/(?:\.{1,2})(?:\/|$)/.test(raw_path) || raw_path.includes('//')) invalid('Invalid public base URL.');
   const base_path = parsed.pathname.replace(/\/$/, '');
   return `${parsed.origin}${base_path}/${object_key.split('/').map(encodeURIComponent).join('/')}`;
 };
@@ -46,10 +46,13 @@ const valid_source_path = (source_path: string): boolean => {
 };
 const canonical_local_destination = (value: string): string | undefined => {
   if (/^(?:[a-z][a-z0-9+.-]*:|\/|#|\?)/i.test(value) || /[\\\x00-\x1f\x7f?#]/.test(value)) return undefined;
-  const normalized = value.startsWith('./') ? value.slice(2) : value;
+  if (/%(?:2f|5c)/i.test(value)) return undefined;
+  let decoded: string;
+  try { decoded = decodeURIComponent(value); } catch { return undefined; }
+  const normalized = decoded.startsWith('./') ? decoded.slice(2) : decoded;
   if (!normalized || normalized.startsWith('./')) return undefined;
   const segments = normalized.split('/');
-  return segments.every((segment) => segment !== '' && segment !== '.' && segment !== '..') ? normalized : undefined;
+  return segments.every((segment) => segment !== '' && segment !== '.' && segment !== '..' && !/[\\\x00-\x1f\x7f]/.test(segment)) ? normalized : undefined;
 };
 
 /** Creates an ASCII-only deterministic image object key. */
@@ -88,8 +91,9 @@ export const prepare_article_images = async (sources: readonly image_source[], o
 const visit = (node: unknown, callback: (node: markdown_node) => void): void => { if (typeof node !== 'object' || node === null) return; const markdown_node = node as markdown_node; callback(markdown_node); if (Array.isArray(markdown_node.children)) for (const child of markdown_node.children) visit(child, callback); };
 const offsets = (node: markdown_node): { start: number; end: number } | undefined => { const start = node.position?.start.offset; const end = node.position?.end.offset; return typeof start === 'number' && typeof end === 'number' ? { start, end } : undefined; };
 const escaped_end = (source: string, start: number, closing: string): number => { for (let index = start; index < source.length; index += 1) { if (source[index] === '\\') { index += 1; continue; } if (source[index] === closing) return index; } return -1; };
+const matching_bracket_end = (source: string, start: number): number => { let depth = 0; for (let index = start; index < source.length; index += 1) { if (source[index] === '\\') { index += 1; continue; } if (source[index] === '[') depth += 1; if (source[index] === ']') { depth -= 1; if (depth === 0) return index; } } return -1; };
 const inline_destination_range = (source: string): { start: number; end: number } | undefined => {
-  const alt_end = escaped_end(source, 2, ']'); if (alt_end < 0 || source[alt_end + 1] !== '(') return undefined;
+  const alt_end = matching_bracket_end(source, 1); if (alt_end < 0 || source[alt_end + 1] !== '(') return undefined;
   const destination_start = alt_end + 2;
   if (source[destination_start] === '<') { const end = escaped_end(source, destination_start + 1, '>'); return end < 0 ? undefined : { start: destination_start + 1, end }; }
   let depth = 0;
@@ -97,7 +101,7 @@ const inline_destination_range = (source: string): { start: number; end: number 
   return undefined;
 };
 const definition_destination_range = (source: string): { start: number; end: number } | undefined => {
-  const marker = source.indexOf(']:'); if (marker < 0) return undefined; let start = marker + 2; while (/\s/.test(source[start] ?? '')) start += 1;
+  const label_end = matching_bracket_end(source, 0); if (label_end < 0 || source[label_end + 1] !== ':') return undefined; let start = label_end + 2; while (/\s/.test(source[start] ?? '')) start += 1;
   if (source[start] === '<') { const end = escaped_end(source, start + 1, '>'); return end < 0 ? undefined : { start: start + 1, end }; }
   let end = start; while (end < source.length && !/\s/.test(source[end]!)) { if (source[end] === '\\') end += 1; end += 1; } return end > start ? { start, end } : undefined;
 };
@@ -143,10 +147,13 @@ export type tencent_cos_config = { secret_id: string; secret_key: string; region
 type cos_client = { headObject(input: { Bucket: string; Region: string; Key: string }): Promise<{ headers?: Record<string, string | undefined> }>; putObject(input: { Bucket: string; Region: string; Key: string; Body: Buffer; ContentLength: number; ContentType: string; 'x-cos-meta-sha256': string }): Promise<unknown>; deleteObject(input: { Bucket: string; Region: string; Key: string }): Promise<unknown> };
 type cos_client_factory = (config: tencent_cos_config) => cos_client;
 const valid_cos_config = (config: tencent_cos_config): void => {
-  if (!config.secret_id.trim() || !config.secret_key.trim() || /\s/.test(config.secret_id) || /\s/.test(config.secret_key) || !/^(?:ap|na|eu|sa|cn)-[a-z0-9]+(?:-[a-z0-9]+)*$/.test(config.region) || !/^[a-z0-9]+(?:-[a-z0-9]+)*-\d{10}$/.test(config.bucket)) invalid('Invalid COS configuration.');
+  if (!config.secret_id.trim() || !config.secret_key.trim() || /[\x00-\x20\x7f]/.test(config.secret_id) || /[\x00-\x20\x7f]/.test(config.secret_key) || !/^(?:ap|na|eu|sa|cn)-[a-z0-9]+(?:-[a-z0-9]+)*$/.test(config.region) || !/^[a-z0-9]+(?:-[a-z0-9]+)*-\d{10}$/.test(config.bucket)) invalid('Invalid COS configuration.');
   root_prefix(config.root_prefix); public_url(config.public_base_url, 'test');
 };
-const valid_adapter_key = (object_key: string, prefix: string): void => { const escaped_prefix = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); if (!new RegExp(`^${escaped_prefix}/articles/\\d{4}/${component_pattern.source.slice(1, -1)}/(?:cover|fig-\\d{2}-${component_pattern.source.slice(1, -1)})\\.(?:webp|png)$`).test(object_key)) invalid('Invalid COS object key.'); };
+const valid_adapter_key = (object_key: string, prefix: string): void => {
+  const prefix_parts = prefix.split('/'); const parts = object_key.split('/'); const tail = parts.slice(prefix_parts.length);
+  if (parts.slice(0, prefix_parts.length).join('/') !== prefix || tail.length !== 4 || tail[0] !== 'articles' || !/^[2-9]\d{3}$/.test(tail[1]!) || !component_pattern.test(tail[2]!) || !/^(?:cover\.webp|fig-\d{2,}-[a-z0-9]+(?:-[a-z0-9]+)*\.(?:webp|png))$/.test(tail[3]!)) invalid('Invalid COS object key.');
+};
 /** Tencent COS adapter. Construction is local-only and does not initiate network traffic. */
 export class tencent_cos_adapter implements cos_adapter {
   private readonly client: cos_client;

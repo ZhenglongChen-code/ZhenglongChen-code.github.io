@@ -157,4 +157,29 @@ describe('studio_images', () => {
     await expect(adapter.delete_object(bad_key)).rejects.toMatchObject({ code: 'validation' });
     expect(calls).toBe(0);
   });
+
+  it('rewrites nested inline labels and escaped definition labels without touching labels or titles', () => {
+    const result = rewrite_markdown_images('![a [b]](images/a.png "title") ![ref][a\\]:b]\n\n[a\\]:b]: images/b.png "t"', new Map([['images/a.png', 'https://x/a'], ['images/b.png', 'https://x/b']]));
+    expect(result).toBe('![a [b]](https://x/a "title") ![ref][a\\]:b]\n\n[a\\]:b]: https://x/b "t"');
+  });
+
+  it('does not rewrite malformed or percent-encoded unsafe local destinations', () => {
+    const result = rewrite_markdown_images('![dot](%2e%2e/a.png) ![slash](a%2fb.png) ![bad](bad%zz.png) ![good](images/a.png)', new Map([['%2e%2e/a.png', 'https://x/no'], ['a%2fb.png', 'https://x/no'], ['bad%zz.png', 'https://x/no'], ['images/a.png', 'https://x/good']]));
+    expect(result).toBe('![dot](%2e%2e/a.png) ![slash](a%2fb.png) ![bad](bad%zz.png) ![good](https://x/good)');
+  });
+
+  it('accepts every builder key at the COS boundary and rejects hierarchy near misses', async () => {
+    const client = { headObject: async () => ({ headers: { 'x-cos-meta-sha256': 'a'.repeat(64) } }), putObject: async () => ({}), deleteObject: async () => ({}) };
+    const adapter = new tencent_cos_adapter({ secret_id: 'id', secret_key: 'key', region: 'ap-shanghai', bucket: 'bucket-1234567890', root_prefix: 'latent-field', public_base_url: 'https://cdn.example.com' }, () => client);
+    const built = build_article_object_key({ root_prefix: 'latent-field', year: 2026, slug: 'vlm-evaluation', figure_number: 100, semantic_name: 'map', extension: 'webp' });
+    await expect(adapter.inspect_object(built)).resolves.toEqual({ sha256: 'a'.repeat(64) });
+    for (const key of ['latent-field/articles/0000/vlm-evaluation/fig-100-map.webp', 'latent-field/articles/2026/vlm-evaluation/cover.png', 'latent-field/articles/2026/vlm-evaluation/fig-100-map.jpg']) await expect(adapter.inspect_object(key)).rejects.toMatchObject({ code: 'validation' });
+  });
+
+  it('rejects raw backslashes in public bases and credential controls before client construction', () => {
+    let calls = 0;
+    const factory = () => { calls += 1; return { headObject: async () => ({ headers: {} }), putObject: async () => ({}), deleteObject: async () => ({}) }; };
+    expect(() => new tencent_cos_adapter({ secret_id: 'id\n', secret_key: 'key', region: 'ap-shanghai', bucket: 'bucket-1234567890', root_prefix: 'latent-field', public_base_url: 'https://cdn.example.com\\evil' }, factory)).toThrow(/invalid/i);
+    expect(calls).toBe(0);
+  });
 });
