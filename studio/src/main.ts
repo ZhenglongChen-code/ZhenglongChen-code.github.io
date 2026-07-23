@@ -19,6 +19,7 @@ type studio_asset = { source_path: string; object_key: string; public_url: strin
 type preview_request = { markdown: string; metadata: article_metadata };
 type preview_response = { preview_html: string; metadata: Partial<article_metadata>; unresolved_images: string[]; publish_configured?: boolean };
 type studio_draft = { markdown: string; metadata: article_metadata; image_urls: Record<string, string> };
+type storage_adapter = { getItem: (key: string) => string | null; setItem: (key: string, value: string) => void; removeItem: (key: string) => void };
 
 /** Returns the next roving-tab stop for horizontal arrow navigation. */
 export const next_tab_index = (current_index: number, key: string, tab_count: number): number => {
@@ -28,6 +29,29 @@ export const next_tab_index = (current_index: number, key: string, tab_count: nu
 
 /** Ensures a delayed response cannot overwrite a newer preview. */
 export const is_latest_preview = (latest_sequence: number, response_sequence: number): boolean => latest_sequence === response_sequence;
+
+/** Keeps focus for explicit actions while routine background updates stay non-disruptive. */
+export const feedback_should_focus = (kind: 'import' | 'publish' | 'validation' | 'preview_failure'): boolean => kind !== 'preview_failure';
+
+/** Creates the next monotonic generation for an imported document. */
+export const next_import_sequence = (current_sequence: number): number => current_sequence + 1;
+
+/** Prevents a slower File.text call from overwriting the latest chosen document. */
+export const is_current_import = (current_sequence: number, candidate_sequence: number): boolean => current_sequence === candidate_sequence;
+
+/** Supplies complete form values so omitted optional metadata clears deterministically. */
+export const normalize_article_metadata = (metadata: Partial<article_metadata>): article_metadata => ({
+  title: metadata.title ?? '', description: metadata.description ?? '', date: metadata.date ?? '', updated: metadata.updated ?? '', tags: metadata.tags ?? [], language: metadata.language ?? 'zh', translation: metadata.translation ?? '', featured: metadata.featured ?? false, draft: metadata.draft ?? true, slug: metadata.slug ?? '', assets: metadata.assets ?? [], social: { zhihu: metadata.social?.zhihu ?? true, wechat: metadata.social?.wechat ?? true, xiaohongshu: metadata.social?.xiaohongshu ?? true },
+});
+
+/** Reads local storage without letting privacy settings interrupt Studio startup. */
+export const safe_storage_get = (storage: storage_adapter | undefined, key: string): string | null => { try { return storage?.getItem(key) ?? null; } catch { return null; } };
+
+/** Writes local storage only when the browser permits it. */
+export const safe_storage_set = (storage: storage_adapter | undefined, key: string, value: string): boolean => { try { storage?.setItem(key, value); return storage !== undefined; } catch { return false; } };
+
+/** Removes invalid local state without surfacing storage permission failures. */
+export const safe_storage_remove = (storage: storage_adapter | undefined, key: string): boolean => { try { storage?.removeItem(key); return storage !== undefined; } catch { return false; } };
 
 const initialize_studio = (): void => {
 
@@ -64,6 +88,9 @@ let unresolved_sources: string[] = [];
 let publish_is_configured = false;
 let preview_controller: AbortController | undefined;
 let preview_sequence = 0;
+let import_sequence = 0;
+
+const get_storage = (): storage_adapter | undefined => { try { return window.localStorage; } catch { return undefined; } };
 
 const get_field = <T extends HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>(name: string): T => {
   const field = metadata_form.elements.namedItem(name);
@@ -87,37 +114,37 @@ const read_metadata = (): article_metadata => ({
 });
 
 const write_metadata = (metadata: Partial<article_metadata>): void => {
-  if (metadata.title !== undefined) get_field<HTMLInputElement>('title').value = metadata.title;
-  if (metadata.description !== undefined) get_field<HTMLTextAreaElement>('description').value = metadata.description;
-  if (metadata.date !== undefined) get_field<HTMLInputElement>('date').value = metadata.date;
-  if (metadata.updated !== undefined) get_field<HTMLInputElement>('updated').value = metadata.updated;
-  if (metadata.tags !== undefined) get_field<HTMLInputElement>('tags').value = metadata.tags.join(', ');
-  if (metadata.language !== undefined) get_field<HTMLSelectElement>('language').value = metadata.language;
-  if (metadata.translation !== undefined) get_field<HTMLInputElement>('translation').value = metadata.translation;
-  if (metadata.slug !== undefined) get_field<HTMLInputElement>('slug').value = metadata.slug;
-  if (metadata.featured !== undefined) get_field<HTMLInputElement>('featured').checked = metadata.featured;
-  if (metadata.draft !== undefined) get_field<HTMLInputElement>('draft').checked = metadata.draft;
-  if (metadata.assets !== undefined) get_field<HTMLInputElement>('assets').value = `${metadata.assets.length} paired asset${metadata.assets.length === 1 ? '' : 's'}`;
-  if (metadata.social !== undefined) {
-    get_field<HTMLInputElement>('zhihu').checked = metadata.social.zhihu;
-    get_field<HTMLInputElement>('wechat').checked = metadata.social.wechat;
-    get_field<HTMLInputElement>('xiaohongshu').checked = metadata.social.xiaohongshu;
-  }
+  const normalized = normalize_article_metadata(metadata);
+  get_field<HTMLInputElement>('title').value = normalized.title;
+  get_field<HTMLTextAreaElement>('description').value = normalized.description;
+  get_field<HTMLInputElement>('date').value = normalized.date;
+  get_field<HTMLInputElement>('updated').value = normalized.updated ?? '';
+  get_field<HTMLInputElement>('tags').value = normalized.tags.join(', ');
+  get_field<HTMLSelectElement>('language').value = normalized.language;
+  get_field<HTMLInputElement>('translation').value = normalized.translation ?? '';
+  get_field<HTMLInputElement>('slug').value = normalized.slug;
+  get_field<HTMLInputElement>('featured').checked = normalized.featured;
+  get_field<HTMLInputElement>('draft').checked = normalized.draft;
+  get_field<HTMLInputElement>('assets').value = `${normalized.assets.length} paired asset${normalized.assets.length === 1 ? '' : 's'}`;
+  get_field<HTMLInputElement>('zhihu').checked = normalized.social.zhihu;
+  get_field<HTMLInputElement>('wechat').checked = normalized.social.wechat;
+  get_field<HTMLInputElement>('xiaohongshu').checked = normalized.social.xiaohongshu;
 };
 
-const announce = (message: string, focus = false): void => {
+const announce = (message: string, kind?: 'import' | 'publish' | 'validation' | 'preview_failure'): void => {
   status_message.textContent = message;
-  if (focus) status_message.focus();
+  if (kind && feedback_should_focus(kind)) status_message.focus();
 };
 
 const persist_draft = (): void => {
   const draft: studio_draft = { markdown: source_input.value, metadata: read_metadata(), image_urls };
-  try { localStorage.setItem(draft_key, JSON.stringify(draft)); } catch { announce('Draft could not be saved in this browser.'); }
+  if (!safe_storage_set(get_storage(), draft_key, JSON.stringify(draft))) announce('Draft could not be saved in this browser.');
 };
 
 const restore_draft = (): void => {
+  const storage = get_storage();
   try {
-    const stored_draft = localStorage.getItem(draft_key);
+    const stored_draft = safe_storage_get(storage, draft_key);
     if (!stored_draft) return;
     const draft = JSON.parse(stored_draft) as Partial<studio_draft>;
     if (typeof draft.markdown === 'string' && draft.metadata && typeof draft.metadata === 'object') {
@@ -126,12 +153,20 @@ const restore_draft = (): void => {
       image_urls = draft.image_urls && typeof draft.image_urls === 'object' ? draft.image_urls : {};
       announce('Local draft restored.');
     }
-  } catch { localStorage.removeItem(draft_key); announce('A corrupt local draft was safely ignored.'); }
+  } catch { safe_storage_remove(storage, draft_key); announce('A corrupt local draft was safely ignored.'); }
+};
+
+const reset_document_state = (): void => {
+  image_files.clear();
+  image_urls = {};
+  unresolved_sources = [];
+  write_metadata({});
+  render_images([]);
 };
 
 const pair_image_file = (source_path: string, file: File | undefined): void => {
   if (!file) return;
-  if (!file.type.startsWith('image/')) { announce(`Select an image file for ${source_path}.`, true); return; }
+  if (!file.type.startsWith('image/')) { announce(`Select an image file for ${source_path}.`, 'validation'); return; }
   image_files.set(source_path, file);
   render_images(unresolved_sources);
   persist_draft();
@@ -159,7 +194,7 @@ const render_images = (images: string[]): void => {
     select_image.addEventListener('click', () => image_input.click());
     url.addEventListener('input', save_url);
     row.addEventListener('dragover', (event) => { event.preventDefault(); event.stopPropagation(); });
-    row.addEventListener('drop', (event) => { event.preventDefault(); event.stopPropagation(); const image_file = [...(event.dataTransfer?.files ?? [])].find((file) => file.type.startsWith('image/')); if (!image_file) { announce(`Drop one image file for ${source_path}.`, true); return; } pair_image_file(source_path, image_file); announce(`${image_file.name} paired with ${source_path}.`); });
+    row.addEventListener('drop', (event) => { event.preventDefault(); event.stopPropagation(); const image_file = [...(event.dataTransfer?.files ?? [])].find((file) => file.type.startsWith('image/')); if (!image_file) { announce(`Drop one image file for ${source_path}.`, 'validation'); return; } pair_image_file(source_path, image_file); announce(`${image_file.name} paired with ${source_path}.`); });
     row.append(label, image_input, select_image, selected, url, final_url); unresolved_images.append(row);
   }
 };
@@ -192,7 +227,7 @@ const request_preview = async (): Promise<void> => {
   } catch (error) {
     if ((error instanceof DOMException && error.name === 'AbortError') || !is_latest_preview(preview_sequence, request_sequence)) return;
     preview_marker.textContent = 'Preview unavailable';
-    announce('Preview unavailable. Your local draft remains intact.', true);
+    announce('Preview unavailable. Your local draft remains intact.');
   }
 };
 
@@ -207,8 +242,13 @@ const schedule_preview = (): void => {
 
 const import_file = async (file: File | undefined): Promise<void> => {
   if (!file) return;
+  const file_sequence = import_sequence = next_import_sequence(import_sequence);
   if (!(/\.md$/i.test(file.name) || ['text/markdown', 'text/plain'].includes(file.type))) { import_feedback.textContent = 'Please choose a Markdown (.md) file.'; import_feedback.focus(); return; }
-  source_input.value = await file.text();
+  let markdown: string;
+  try { markdown = await file.text(); } catch { if (is_current_import(import_sequence, file_sequence)) { import_feedback.textContent = `Unable to read ${file.name}.`; import_feedback.focus(); } return; }
+  if (!is_current_import(import_sequence, file_sequence)) return;
+  reset_document_state();
+  source_input.value = markdown;
   import_feedback.textContent = `Imported ${file.name}.`;
   import_feedback.focus();
   source_input.focus();
@@ -232,7 +272,7 @@ const sync_workspace_mode = (): void => {
   select_tab(editor_tab.getAttribute('aria-selected') === 'false' ? 1 : 0);
 };
 
-const publish = (mode: 'new' | 'update'): void => { announce(publish_is_configured ? `${mode === 'new' ? 'New article publication' : 'Article update'} is ready for the configured publisher.` : 'Publishing is disabled until a local publisher is configured.', true); };
+const publish = (mode: 'new' | 'update'): void => { announce(publish_is_configured ? `${mode === 'new' ? 'New article publication' : 'Article update'} is ready for the configured publisher.` : 'Publishing is disabled until a local publisher is configured.', 'publish'); };
 
 file_input.addEventListener('change', () => { void import_file(file_input.files?.[0]); });
 source_input.addEventListener('input', schedule_preview);
@@ -241,7 +281,7 @@ workspace.addEventListener('dragover', (event) => { event.preventDefault(); work
 workspace.addEventListener('dragleave', () => workspace.classList.remove('is-dropping'));
 workspace.addEventListener('drop', (event) => { event.preventDefault(); workspace.classList.remove('is-dropping'); void import_file(event.dataTransfer?.files[0]); });
 unresolved_images.addEventListener('dragover', (event) => { event.preventDefault(); event.stopPropagation(); });
-unresolved_images.addEventListener('drop', (event) => { event.preventDefault(); event.stopPropagation(); const image_file = [...(event.dataTransfer?.files ?? [])].find((file) => file.type.startsWith('image/')); if (!image_file) { announce('Drop an image file to pair it with a local image reference.', true); return; } if (unresolved_sources.length !== 1) { announce('Choose the unresolved image target before dropping a file.', true); return; } pair_image_file(unresolved_sources[0] as string, image_file); });
+unresolved_images.addEventListener('drop', (event) => { event.preventDefault(); event.stopPropagation(); const image_file = [...(event.dataTransfer?.files ?? [])].find((file) => file.type.startsWith('image/')); if (!image_file) { announce('Drop an image file to pair it with a local image reference.', 'validation'); return; } if (unresolved_sources.length !== 1) { announce('Choose the unresolved image target before dropping a file.', 'validation'); return; } pair_image_file(unresolved_sources[0] as string, image_file); });
 editor_tab.addEventListener('click', () => select_tab(0));
 preview_tab.addEventListener('click', () => select_tab(1));
 [editor_tab, preview_tab].forEach((tab, current_index) => tab.addEventListener('keydown', (event) => { const selected_index = next_tab_index(current_index, event.key, 2); if (selected_index !== current_index) { event.preventDefault(); select_tab(selected_index, true); } }));

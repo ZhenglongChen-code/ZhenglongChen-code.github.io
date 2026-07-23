@@ -1,5 +1,6 @@
 :root { --paper: #f3efe6; --ink: #181815; --muted: #6c6962; --rule: rgba(24, 24, 21, .18); --cobalt: #1649c2; --vermilion: #b53325; --serif: Iowan Old Style, Palatino Linotype, Book Antiqua, Georgia, serif; --sans: Avenir Next, Avenir, Helvetica Neue, sans-serif; --mono: SFMono-Regular, Consolas, Liberation Mono, monospace; }
 * { box-sizing: border-box; }
+.studio-grid, .metadata-rail, .workbench, .workspace-panels, .editor-panel, .preview-panel { min-width: 0; max-width: 100%; }
 body { margin: 0; background: var(--paper); color: var(--ink); font-family: var(--sans); font-size: 13px; line-height: 1.45; }
 button, input, textarea, select { font: inherit; }
 button, .import-control { min-height: 44px; }

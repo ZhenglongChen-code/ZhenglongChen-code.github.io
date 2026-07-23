@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, test } from 'vitest';
-import { is_latest_preview, next_tab_index } from '../studio/src/main';
+import { feedback_should_focus, is_current_import, is_latest_preview, next_import_sequence, next_tab_index, normalize_article_metadata, safe_storage_get, safe_storage_remove, safe_storage_set } from '../studio/src/main';
 
 const read_source = (path: string): string => readFileSync(resolve(process.cwd(), path), 'utf8');
 
@@ -60,6 +60,8 @@ describe('local markdown studio UI contract', () => {
     expect(main).toContain('AbortController');
     expect(main).toContain('preview_sequence');
     expect(main).toContain('image_files');
+    expect(main).toContain('image_files.clear()');
+    expect(main).toContain('import_sequence');
     expect(main).not.toContain("./studio_logic");
     expect(vite).toContain("root: 'studio'");
     expect(vite).toContain("outDir: 'dist'");
@@ -82,5 +84,36 @@ describe('local markdown studio UI contract', () => {
     expect(abort_position).toBeGreaterThan(schedule_start);
     expect(timeout_position).toBeGreaterThan(abort_position);
     expect(is_latest_preview(4, 3)).toBe(false);
+  });
+
+  test('keeps routine preview failures in the live region without stealing editor focus', () => {
+    const main = read_source('studio/src/main.ts');
+
+    expect(feedback_should_focus('preview_failure')).toBe(false);
+    expect(feedback_should_focus('import')).toBe(true);
+    expect(main).toContain("announce('Preview unavailable. Your local draft remains intact.');");
+  });
+
+  test('normalizes a fresh document and accepts only the newest import', () => {
+    expect(next_import_sequence(4)).toBe(5);
+    expect(is_current_import(5, 4)).toBe(false);
+    expect(is_current_import(5, 5)).toBe(true);
+    expect(normalize_article_metadata({ title: 'Fresh', date: '2026-07-23' })).toMatchObject({ title: 'Fresh', date: '2026-07-23', updated: '', translation: '', assets: [] });
+  });
+
+  test('contains storage adapter failures without interrupting Studio initialization', () => {
+    const denied_storage = {
+      getItem: (): string => { throw new Error('denied'); },
+      setItem: (): void => { throw new Error('denied'); },
+      removeItem: (): void => { throw new Error('denied'); },
+    };
+
+    expect(safe_storage_get(denied_storage, 'draft')).toBeNull();
+    expect(safe_storage_set(denied_storage, 'draft', 'value')).toBe(false);
+    expect(safe_storage_remove(denied_storage, 'draft')).toBe(false);
+  });
+
+  test('keeps the 320px layout within its viewport', () => {
+    expect(read_source('studio/src/studio.css')).toContain('.studio-grid, .metadata-rail, .workbench, .workspace-panels, .editor-panel, .preview-panel { min-width: 0; max-width: 100%; }');
   });
 });
