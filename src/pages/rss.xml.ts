@@ -14,7 +14,7 @@ export async function GET(context: APIContext) {
     .filter((writing_entry) => writing_entry.data.language === 'zh');
 
   return rss({
-    title: 'ChenZL 的写作',
+    title: 'Zhenglong Chen 的写作',
     description: '关于多模态研究、数学思考、AI 产品与长期实践的中文写作。',
     site: context.site,
     items: chinese_posts.map((writing_entry) => ({

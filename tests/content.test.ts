@@ -104,7 +104,7 @@ describe('group_posts_by_tag', () => {
 });
 
 describe('public identity source', () => {
-  it('uses ChenZL throughout the public Astro and RSS source', async () => {
+  it('uses the approved Zhenglong Chen identity throughout the public Astro and RSS source', async () => {
     const public_source_files = [
       'src/pages/index.astro',
       'src/pages/about.astro',
@@ -119,16 +119,11 @@ describe('public identity source', () => {
       'src/layouts/article_layout.astro',
       'src/pages/rss.xml.ts',
     ];
-    const former_public_names = ['陈正龙', 'Zhenglong Chen'];
-
     const public_sources = await Promise.all(public_source_files.map(async (source_file) => (
       read_file(resolve_path(process.cwd(), source_file), 'utf8')
     )));
 
-    expect(public_sources.join('\n')).toContain('ChenZL');
-    for (const former_public_name of former_public_names) {
-      expect(public_sources.join('\n')).not.toContain(former_public_name);
-    }
+    expect(public_sources.join('\n')).toContain('Zhenglong Chen');
   });
 });
 
@@ -140,7 +135,7 @@ describe('site header source', () => {
     );
 
     expect(source).toContain('<header class="site_header shell" lang="en">');
-    expect(source).toContain('aria-label="ChenZL, return home"');
+    expect(source).toContain('aria-label="Zhenglong Chen, return home"');
     expect(source).toContain('aria-label="Primary navigation"');
   });
 });

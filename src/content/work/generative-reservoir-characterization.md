@@ -1,0 +1,11 @@
+---
+title: Generative Characterization of Oil-Gas Reservoirs
+description: Generative characterization and surrogate modeling for transient Darcy flow in oil-gas reservoirs.
+kind: project
+year: 2025
+tags: [Generative Modeling, Neural Operator, Reservoir Simulation]
+featured: true
+draft: false
+---
+
+This project studied generative characterization of oil-gas reservoirs, including adaptive sampling for transient Darcy flow surrogate modeling.

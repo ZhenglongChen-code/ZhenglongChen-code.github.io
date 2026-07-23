@@ -288,7 +288,7 @@ run_deploy() {
 # Keep deployment scenarios independent of ignored build output in the checkout.
 deploy_fixture="$test_root/deploy_site"
 mkdir -p "$deploy_fixture/dist"
-printf '%s\n' '<!doctype html><html lang="zh-CN"><head><link rel="canonical" href="http://106.14.173.234/"></head><body>ChenZL</body></html>' >"$deploy_fixture/dist/index.html"
+printf '%s\n' '<!doctype html><html lang="zh-CN"><head><link rel="canonical" href="http://106.14.173.234/"></head><body>Zhenglong Chen</body></html>' >"$deploy_fixture/dist/index.html"
 
 # Reset mocks and environment to a valid production-shaped baseline.
 reset_case() {
@@ -670,14 +670,14 @@ mkdir -p \
   "$valid_fixture/dist/articles" \
   "$valid_fixture/dist/about" \
   "$valid_fixture/social_exports/welcome"
-printf '%s\n' '<!doctype html><html lang="zh-CN"><head><link rel="canonical" href="http://106.14.173.234/"></head><body>ChenZL</body></html>' >"$valid_fixture/dist/index.html"
+printf '%s\n' '<!doctype html><html lang="zh-CN"><head><link rel="canonical" href="http://106.14.173.234/"></head><body>Zhenglong Chen</body></html>' >"$valid_fixture/dist/index.html"
 printf '%s\n' '<!doctype html>' >"$valid_fixture/dist/research/index.html"
 printf '%s\n' '<!doctype html>' >"$valid_fixture/dist/projects/index.html"
 printf '%s\n' '<!doctype html>' >"$valid_fixture/dist/articles/index.html"
 printf '%s\n' '<!doctype html>' >"$valid_fixture/dist/about/index.html"
 printf '%s\n' '<rss></rss>' >"$valid_fixture/dist/rss.xml"
 printf '%s\n' '<!doctype html>' >"$valid_fixture/dist/404.html"
-printf '%s\n' '# ChenZL' >"$valid_fixture/social_exports/welcome/zhihu.md"
+printf '%s\n' '# Zhenglong Chen' >"$valid_fixture/social_exports/welcome/zhihu.md"
 run_site_check "$valid_fixture" "$valid_site_output" || fail "valid site artifacts should pass"
 assert_contains "site artifacts verified" "$valid_site_output"
 

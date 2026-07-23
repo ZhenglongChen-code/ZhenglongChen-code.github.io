@@ -20,7 +20,7 @@ const generated_artifact_roots = [
   { path: 'social_exports', extensions: social_export_extensions },
 ];
 
-const former_public_names = ['陈正龙', 'Zhenglong Chen'];
+const former_public_names = ['陈正龙', 'ChenZL'];
 
 /** Return a validation error for a build artifact, or null when it is safe. */
 async function inspect_artifact(relative_path) {
@@ -173,8 +173,8 @@ async function check_site() {
   if (!canonical_pattern.test(index_html)) {
     index_errors.push('missing canonical http://106.14.173.234/');
   }
-  if (!index_html.includes('ChenZL')) {
-    index_errors.push('missing ChenZL public identity');
+  if (!index_html.includes('Zhenglong Chen')) {
+    index_errors.push('missing Zhenglong Chen public identity');
   }
 
   if (index_errors.length > 0) {

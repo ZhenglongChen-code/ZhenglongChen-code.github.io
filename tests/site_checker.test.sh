@@ -30,14 +30,14 @@ make_fixture() {
 
   mkdir -p "$fixture_root/dist/research" "$fixture_root/dist/projects" "$fixture_root/dist/articles" "$fixture_root/dist/about" \
     "$fixture_root/social_exports/welcome"
-  printf '<!doctype html><html lang="zh-CN"><head><link rel="canonical" href="http://106.14.173.234/"></head><body>ChenZL</body></html>\n' >"$fixture_root/dist/index.html"
-  printf '<html>ChenZL</html>\n' >"$fixture_root/dist/research/index.html"
-  printf '<html>ChenZL</html>\n' >"$fixture_root/dist/projects/index.html"
-  printf '<html>ChenZL</html>\n' >"$fixture_root/dist/articles/index.html"
-  printf '<html>ChenZL</html>\n' >"$fixture_root/dist/about/index.html"
-  printf '<rss>ChenZL</rss>\n' >"$fixture_root/dist/rss.xml"
-  printf '<html>ChenZL</html>\n' >"$fixture_root/dist/404.html"
-  printf 'ChenZL\n' >"$fixture_root/social_exports/welcome/zhihu.md"
+  printf '<!doctype html><html lang="zh-CN"><head><link rel="canonical" href="http://106.14.173.234/"></head><body>Zhenglong Chen</body></html>\n' >"$fixture_root/dist/index.html"
+  printf '<html>Zhenglong Chen</html>\n' >"$fixture_root/dist/research/index.html"
+  printf '<html>Zhenglong Chen</html>\n' >"$fixture_root/dist/projects/index.html"
+  printf '<html>Zhenglong Chen</html>\n' >"$fixture_root/dist/articles/index.html"
+  printf '<html>Zhenglong Chen</html>\n' >"$fixture_root/dist/about/index.html"
+  printf '<rss>Zhenglong Chen</rss>\n' >"$fixture_root/dist/rss.xml"
+  printf '<html>Zhenglong Chen</html>\n' >"$fixture_root/dist/404.html"
+  printf 'Zhenglong Chen\n' >"$fixture_root/social_exports/welcome/zhihu.md"
 }
 
 run_checker() {
@@ -55,19 +55,19 @@ assert_success 'a valid generated artifact set must pass' run_checker "$valid_fi
 legacy_work_fixture="$test_root/legacy_work"
 make_fixture "$legacy_work_fixture"
 mkdir -p "$legacy_work_fixture/dist/work"
-printf '<html>ChenZL</html>\n' >"$legacy_work_fixture/dist/work/index.html"
+printf '<html>Zhenglong Chen</html>\n' >"$legacy_work_fixture/dist/work/index.html"
 assert_failure 'legacy work output must be rejected' run_checker "$legacy_work_fixture"
 
 legacy_writing_fixture="$test_root/legacy_writing"
 make_fixture "$legacy_writing_fixture"
 mkdir -p "$legacy_writing_fixture/dist/writing"
-printf '<html>ChenZL</html>\n' >"$legacy_writing_fixture/dist/writing/index.html"
+printf '<html>Zhenglong Chen</html>\n' >"$legacy_writing_fixture/dist/writing/index.html"
 assert_failure 'legacy writing output must be rejected' run_checker "$legacy_writing_fixture"
 
 legacy_english_writing_fixture="$test_root/legacy_english_writing"
 make_fixture "$legacy_english_writing_fixture"
 mkdir -p "$legacy_english_writing_fixture/dist/en/writing"
-printf '<html>ChenZL</html>\n' >"$legacy_english_writing_fixture/dist/en/writing/index.html"
+printf '<html>Zhenglong Chen</html>\n' >"$legacy_english_writing_fixture/dist/en/writing/index.html"
 assert_failure 'legacy English writing output must be rejected' run_checker "$legacy_english_writing_fixture"
 
 chinese_leak_fixture="$test_root/chinese_leak"
@@ -78,14 +78,14 @@ assert_failure 'generated HTML containing the former Chinese public name must fa
 
 english_leak_fixture="$test_root/english_leak"
 make_fixture "$english_leak_fixture"
-printf 'Zhenglong Chen\n' >"$english_leak_fixture/social_exports/welcome/zhihu.md"
-assert_failure 'social-export text containing the former English public name must fail' \
+printf 'ChenZL\n' >"$english_leak_fixture/social_exports/welcome/zhihu.md"
+assert_failure 'social-export text containing the former public name must fail' \
   run_checker "$english_leak_fixture"
 
 missing_identity_fixture="$test_root/missing_identity"
 make_fixture "$missing_identity_fixture"
 printf '<!doctype html><html lang="zh-CN"><head><link rel="canonical" href="http://106.14.173.234/"></head><body>public homepage</body></html>\n' >"$missing_identity_fixture/dist/index.html"
-assert_failure 'a homepage without ChenZL must fail' run_checker "$missing_identity_fixture"
+assert_failure 'a homepage without Zhenglong Chen must fail' run_checker "$missing_identity_fixture"
 
 missing_social_exports_fixture="$test_root/missing_social_exports"
 make_fixture "$missing_social_exports_fixture"
@@ -100,7 +100,7 @@ assert_failure 'social exports without generated text files must fail' run_check
 source_only_fixture="$test_root/source_only"
 make_fixture "$source_only_fixture"
 mkdir -p "$source_only_fixture/src"
-printf '陈正龙\nZhenglong Chen\n' >"$source_only_fixture/src/notes.md"
+printf '陈正龙\nChenZL\n' >"$source_only_fixture/src/notes.md"
 assert_success 'source documents are outside the generated artifact scan' run_checker "$source_only_fixture"
 
 printf 'site_checker tests passed\n'

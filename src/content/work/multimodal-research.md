@@ -1,13 +1,11 @@
 ---
-title: 多模态理解与推理探索
-description: 围绕视觉、语言与结构化信息协同建模的研究方向。
+title: Multimodal Learning and Visual Reasoning
+description: Research interests in multimodal learning, visual reasoning, and model evaluation.
 kind: research
 year: 2026
-tags: [多模态, 视觉语言模型, 推理]
+tags: [VLM, Multimodal, Reasoning]
 featured: true
 draft: false
 ---
 
-这个方向关注如何让模型在图像、文本和结构化上下文之间建立可检查的联系。实践中会从任务定义、数据表示、评估方式和失败案例出发，观察模型何时真正利用了视觉证据，何时只是在复述语言先验。
-
-重点不只是提高单一指标，也包括让推理过程更容易分析，并为后续的应用选择合适的边界与交互方式。
+This work explores how visual and language information can support reliable reasoning in multimodal models.
