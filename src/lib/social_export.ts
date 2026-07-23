@@ -45,6 +45,8 @@ const wechat_tags = [
   'hr',
 ] as const;
 
+const source_detection_tags = wechat_tags.filter((tag) => tag !== 'code' && tag !== 'pre');
+
 const xiaohongshu_max_characters = 1000;
 
 type protected_math_source = {
@@ -67,9 +69,13 @@ function create_plain_text_renderer(canonical_url?: string): Renderer {
   const plain_text_renderer = new Renderer();
   plain_text_renderer.image = render_image_alt;
   plain_text_renderer.br = render_plain_break;
-  plain_text_renderer.link = ({ href, text }: Tokens.Link): string => (
-    canonical_url && href === canonical_url ? `${text} ${href}` : text
-  );
+  plain_text_renderer.link = ({ href, text }: Tokens.Link): string => {
+    if (canonical_url && href === canonical_url) {
+      return text === href ? text : `${text} ${href}`;
+    }
+
+    return text;
+  };
 
   return plain_text_renderer;
 }
@@ -181,13 +187,32 @@ function mask_inline_code(markdown: string): string {
   return characters.join('');
 }
 
+/** Masks fenced code blocks using Marked's CommonMark-aware lexer tokens. */
+function mask_fenced_code(markdown: string): string {
+  const characters = markdown.split('');
+  const tokens = marked.lexer(markdown);
+  let search_start = 0;
+
+  for (const token of tokens) {
+    const token_start = markdown.indexOf(token.raw, search_start);
+    if (token_start < 0) {
+      continue;
+    }
+
+    if (token.type === 'code') {
+      characters.fill(' ', token_start, token_start + token.raw.length);
+    }
+
+    search_start = token_start + token.raw.length;
+  }
+
+  return characters.join('');
+}
+
 /** Masks Markdown regions whose HTML-looking text cannot execute as raw HTML. */
 function mask_non_executable_markdown(markdown: string): string {
   const without_comments = markdown.replace(/<!--[\s\S]*?(?:-->|$)/gu, mask_source_range);
-  const without_fenced_code = without_comments.replace(
-    /^ {0,3}(`{3,}|~{3,})[^\n]*(?:\n[\s\S]*?)(?:\n\1[^\n]*|$)/gmu,
-    mask_source_range,
-  );
+  const without_fenced_code = mask_fenced_code(without_comments);
 
   return mask_inline_code(without_fenced_code);
 }
@@ -290,11 +315,11 @@ function has_surviving_canonical_source(article: social_article): boolean {
   }
 
   const sanitized_html = sanitize_html(parsed_markdown, {
-    allowedTags: [...wechat_tags],
+    allowedTags: source_detection_tags,
     allowedAttributes: { a: ['href'] },
     allowedSchemes: ['http', 'https', 'mailto'],
     allowProtocolRelative: false,
-    nonTextTags: ['script', 'style', 'textarea', 'option', 'iframe', 'object', 'embed'],
+    nonTextTags: ['script', 'style', 'textarea', 'option', 'iframe', 'object', 'embed', 'code', 'pre'],
   });
 
   return sanitized_html.includes(escape_html(article.canonical_url));

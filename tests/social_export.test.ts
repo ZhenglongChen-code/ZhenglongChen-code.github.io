@@ -153,6 +153,35 @@ describe('social article formatters', () => {
     expect(xiaohongshu_output.match(url_pattern)).toHaveLength(1);
   });
 
+  it('emits an autolink canonical source once in Xiaohongshu output', () => {
+    const sourced_article: social_article = {
+      ...article,
+      markdown: `<${article.canonical_url}>`,
+    };
+    const url_pattern = new RegExp(article.canonical_url, 'gu');
+
+    const output = format_xiaohongshu(sourced_article);
+
+    expect(output.match(url_pattern)).toHaveLength(1);
+  });
+
+  it('adds attribution when the canonical URL appears only in code', () => {
+    const code_source_article: social_article = {
+      ...article,
+      markdown: [
+        `\`${article.canonical_url}\``,
+        '',
+        '```text',
+        article.canonical_url,
+        '```',
+      ].join('\n'),
+    };
+
+    expect(format_zhihu(code_source_article)).toContain(`原文：${article.canonical_url}`);
+    expect(format_wechat_html(code_source_article)).toContain(`href="${article.canonical_url}"`);
+    expect(format_xiaohongshu(code_source_article)).toContain(`原文：${article.canonical_url}`);
+  });
+
   it('removes unsafe raw HTML, event handlers, and JavaScript URLs from WeChat HTML', () => {
     const unsafe_article: social_article = {
       ...article,
@@ -202,6 +231,17 @@ describe('social article formatters', () => {
 
     expect(() => validate_unsafe_raw_html(non_executable_markdown)).not.toThrow();
     expect(() => validate_unsafe_raw_html('<script>actual raw HTML')).toThrow(/unclosed.*script/i);
+  });
+
+  it('stops masking a fence at a one-to-three-space-indented closing fence', () => {
+    const markdown = [
+      '```html',
+      '<script>fenced code',
+      '   ```',
+      '<script>actual raw HTML',
+    ].join('\n');
+
+    expect(() => validate_unsafe_raw_html(markdown)).toThrow(/unclosed.*script/i);
   });
 
   it('keeps trusted attribution when canonical text occurs only in removed raw content', () => {
