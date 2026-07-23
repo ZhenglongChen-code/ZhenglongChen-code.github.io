@@ -25,6 +25,9 @@ type publish_result = { kind: 'published'; public_url: string; commit_sha: strin
 type studio_limits = { image_max_bytes: number; request_max_bytes: number; max_images: number };
 type studio_draft = { markdown: string; metadata: article_metadata; image_urls: Record<string, string> };
 type storage_adapter = { getItem: (key: string) => string | null; setItem: (key: string, value: string) => void; removeItem: (key: string) => void };
+type publication_intent_image = { source_path: string; file_name: string; file_size: number; file_last_modified: number; file_type: string; intent: image_intent };
+type publication_intent = { mode: 'new' | 'update'; markdown: string; metadata: article_metadata; expected_source_hash: string | undefined; images: publication_intent_image[] };
+export type pending_publication_request = { intent_key: string; request_id: string };
 
 /** Returns the next roving-tab stop for horizontal arrow navigation. */
 export const next_tab_index = (current_index: number, key: string, tab_count: number): number => {
@@ -48,6 +51,12 @@ export const is_current_import = (current_sequence: number, candidate_sequence: 
 export const normalize_article_metadata = (metadata: Partial<article_metadata>): article_metadata => ({
   title: metadata.title ?? '', description: metadata.description ?? '', date: metadata.date ?? '', updated: metadata.updated ?? '', tags: metadata.tags ?? [], language: metadata.language ?? 'zh', translation: metadata.translation ?? '', featured: metadata.featured ?? false, draft: metadata.draft ?? false, slug: metadata.slug ?? '', assets: metadata.assets ?? [], social: { zhihu: metadata.social?.zhihu ?? true, wechat: metadata.social?.wechat ?? true, xiaohongshu: metadata.social?.xiaohongshu ?? true },
 });
+
+/** Serializes every browser-controlled value that determines a publication transaction. */
+export const publication_intent_key = (intent: publication_intent): string => JSON.stringify(intent);
+
+/** Reuses an unresolved publication transaction only when the exact intent is unchanged. */
+export const publication_request_for_intent = (pending_request: pending_publication_request | undefined, intent_key: string, create_request_id: () => string): pending_publication_request => pending_request?.intent_key === intent_key ? pending_request : { intent_key, request_id: create_request_id() };
 
 /** Reads local storage without letting privacy settings interrupt Studio startup. */
 export const safe_storage_get = (storage: storage_adapter | undefined, key: string): string | null => { try { return storage?.getItem(key) ?? null; } catch { return null; } };
@@ -128,6 +137,7 @@ let import_sequence = 0;
 let session_token: string | undefined;
 let expected_source_hash: string | undefined;
 let publish_in_flight = false;
+let pending_publication: pending_publication_request | undefined;
 let studio_limits: studio_limits = { image_max_bytes: 20_000_000, request_max_bytes: 25_000_000, max_images: 20 };
 
 const get_storage = (): storage_adapter | undefined => { try { return window.localStorage; } catch { return undefined; } };
@@ -177,6 +187,9 @@ const announce = (message: string, kind?: 'import' | 'publish' | 'validation' | 
   if (kind && feedback_should_focus(kind)) status_message.focus();
 };
 
+/** Discards a retry token once the editor no longer represents its transaction. */
+const clear_pending_publication_request = (): void => { pending_publication = undefined; };
+
 const persist_draft = (): void => {
   const draft: studio_draft = { markdown: source_input.value, metadata: read_metadata(), image_urls };
   if (!safe_storage_set(get_storage(), draft_key, JSON.stringify(draft))) announce('Draft could not be saved in this browser.');
@@ -198,6 +211,7 @@ const restore_draft = (): void => {
 };
 
 const reset_document_state = (): void => {
+  clear_pending_publication_request();
   image_files.clear();
   image_intents.clear();
   image_urls = {};
@@ -214,6 +228,7 @@ const reset_document_state = (): void => {
 const pair_image_file = (source_path: string, file: File | undefined): void => {
   if (!file) return;
   if (file.type !== 'image/jpeg' && file.type !== 'image/png') { announce(`Select a JPEG or PNG image for ${source_path}.`, 'validation'); return; }
+  clear_pending_publication_request();
   image_files.set(source_path, file);
   if (!image_intents.has(source_path)) image_intents.set(source_path, file.type === 'image/jpeg' ? 'photo' : 'diagram');
   render_images(unresolved_sources);
@@ -242,9 +257,9 @@ const render_images = (images: string[]): void => {
     const intent = document.createElement('select'); intent.setAttribute('aria-label', `Image intent for ${source_path}`); for (const value of ['photo', 'screenshot', 'diagram'] as const) { const option = document.createElement('option'); option.value = value; option.textContent = value; intent.append(option); } intent.value = image_intents.get(source_path) ?? (image_files.get(source_path)?.type === 'image/jpeg' ? 'photo' : 'diagram');
     const url = document.createElement('input'); url.type = 'url'; url.value = image_urls[source_path] ?? ''; url.placeholder = 'Final https:// image URL'; url.setAttribute('aria-label', `Final URL placeholder for ${source_path}`);
     const final_url = document.createElement('span'); final_url.textContent = url.value ? `Final URL: ${url.value}` : 'Final URL placeholder — supplied after upload.';
-    const save_url = (): void => { image_urls = { ...image_urls, [source_path]: url.value.trim() }; final_url.textContent = url.value ? `Final URL: ${url.value}` : 'Final URL placeholder — supplied after upload.'; persist_draft(); };
+    const save_url = (): void => { clear_pending_publication_request(); image_urls = { ...image_urls, [source_path]: url.value.trim() }; final_url.textContent = url.value ? `Final URL: ${url.value}` : 'Final URL placeholder — supplied after upload.'; persist_draft(); };
     image_input.addEventListener('change', () => pair_image_file(source_path, image_input.files?.[0]));
-    intent.addEventListener('change', () => { image_intents.set(source_path, intent.value as image_intent); persist_draft(); });
+    intent.addEventListener('change', () => { clear_pending_publication_request(); image_intents.set(source_path, intent.value as image_intent); persist_draft(); });
     select_image.addEventListener('click', () => image_input.click());
     url.addEventListener('input', save_url);
     row.addEventListener('dragover', (event) => { event.preventDefault(); event.stopPropagation(); });
@@ -310,6 +325,7 @@ const request_preview = async (): Promise<void> => {
 };
 
 const schedule_preview = (): void => {
+  clear_pending_publication_request();
   preview_sequence += 1;
   preview_controller?.abort();
   preview_controller = undefined;
@@ -364,25 +380,28 @@ const publish = async (mode: 'new' | 'update'): Promise<void> => {
   if (image_snapshot.some((image) => !image.file)) { announce('Pair every referenced local image before publishing.', 'validation'); return; }
   if (image_snapshot.length > studio_limits.max_images || image_snapshot.some((image) => image.file!.size > studio_limits.image_max_bytes)) { announce('One or more images exceed the local publishing limit.', 'validation'); return; }
   const metadata_snapshot = { ...metadata, tags: [...metadata.tags], social: { ...metadata.social } };
-  const snapshot = { request_id: crypto.randomUUID().toLowerCase(), markdown: source_input.value, metadata: metadata_snapshot, slug: metadata.slug, year, expected_source_hash, images: image_snapshot.map((image) => ({ source_path: image.source_path, file: image.file!, intent: image.intent ?? (image.file!.type === 'image/jpeg' ? 'photo' : 'diagram'), semantic_name: semantic_image_name(image.source_path) })) };
+  const snapshot = { markdown: source_input.value, metadata: metadata_snapshot, slug: metadata.slug, year, expected_source_hash, images: image_snapshot.map((image) => ({ source_path: image.source_path, file: image.file!, intent: image.intent ?? (image.file!.type === 'image/jpeg' ? 'photo' : 'diagram'), semantic_name: semantic_image_name(image.source_path) })) };
   const { slug: _estimated_slug, assets: _estimated_assets, ...estimated_metadata } = snapshot.metadata;
   const image_descriptors = snapshot.images.map((image) => ({ source_path: image.source_path, bytes_base64: '', claimed_content_type: image.file.type === 'image/jpeg' ? 'image/jpeg' as const : 'image/png' as const, intent: image.intent, semantic_name: image.semantic_name }));
-  const request_skeleton = { protocol_version: 1 as const, kind: mode === 'new' ? 'publish_new' as const : 'publish_update' as const, request_id: snapshot.request_id, slug: snapshot.slug, year: snapshot.year, markdown: snapshot.markdown, metadata: estimated_metadata, ...(image_descriptors.length ? { images: image_descriptors } : {}), commit_message: `content: publish ${snapshot.slug}`, ...(mode === 'update' ? { expected_source_hash: snapshot.expected_source_hash } : {}) };
+  const request_skeleton = { protocol_version: 1 as const, kind: mode === 'new' ? 'publish_new' as const : 'publish_update' as const, request_id: '0'.repeat(36), slug: snapshot.slug, year: snapshot.year, markdown: snapshot.markdown, metadata: estimated_metadata, ...(image_descriptors.length ? { images: image_descriptors } : {}), commit_message: `content: publish ${snapshot.slug}`, ...(mode === 'update' ? { expected_source_hash: snapshot.expected_source_hash } : {}) };
   const estimated_bytes = new TextEncoder().encode(JSON.stringify(request_skeleton)).byteLength + snapshot.images.reduce((total, image) => total + base64_size(image.file.size), 0);
   if (estimated_bytes > studio_limits.request_max_bytes) { announce('This publication request exceeds the local request limit.', 'validation'); return; }
+  const publication_request = publication_request_for_intent(pending_publication, publication_intent_key({ mode, markdown: snapshot.markdown, metadata: snapshot.metadata, expected_source_hash: snapshot.expected_source_hash, images: snapshot.images.map((image) => ({ source_path: image.source_path, file_name: image.file.name, file_size: image.file.size, file_last_modified: image.file.lastModified, file_type: image.file.type, intent: image.intent })) }), () => crypto.randomUUID().toLowerCase());
+  pending_publication = publication_request;
   publish_in_flight = true;
   update_publish_state(publish_is_configured);
   try {
     const images: { source_path: string; bytes_base64: string; claimed_content_type: 'image/jpeg' | 'image/png'; intent: image_intent; semantic_name: string }[] = [];
     for (const image of snapshot.images) images.push({ source_path: image.source_path, bytes_base64: await image_base64(image.file), claimed_content_type: image.file.type === 'image/jpeg' ? 'image/jpeg' : 'image/png', intent: image.intent, semantic_name: semantic_image_name(image.source_path) });
     const { slug, assets: _assets, ...protocol_metadata } = snapshot.metadata;
-    const request = { protocol_version: 1 as const, kind: mode === 'new' ? 'publish_new' as const : 'publish_update' as const, request_id: snapshot.request_id, slug: snapshot.slug, year: snapshot.year, markdown: snapshot.markdown, metadata: protocol_metadata, ...(images.length ? { images } : {}), commit_message: `content: publish ${snapshot.slug}`, ...(mode === 'update' ? { expected_source_hash: snapshot.expected_source_hash } : {}) };
+    const request = { protocol_version: 1 as const, kind: mode === 'new' ? 'publish_new' as const : 'publish_update' as const, request_id: publication_request.request_id, slug: snapshot.slug, year: snapshot.year, markdown: snapshot.markdown, metadata: protocol_metadata, ...(images.length ? { images } : {}), commit_message: `content: publish ${snapshot.slug}`, ...(mode === 'update' ? { expected_source_hash: snapshot.expected_source_hash } : {}) };
     const request_body = JSON.stringify(request);
     if (new TextEncoder().encode(request_body).byteLength > studio_limits.request_max_bytes) { announce('This publication request exceeds the local request limit.', 'validation'); return; }
     const response = await fetch('/api/publish', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-studio-token': session_token }, body: request_body });
     const result = await response.json() as publish_result;
-    if (result.kind === 'failed' || result.kind === 'recovery_required') { announce(publication_feedback(result), 'publish'); return; }
+    if (result.kind === 'failed' || result.kind === 'recovery_required') { clear_pending_publication_request(); announce(publication_feedback(result), 'publish'); return; }
     if (!response.ok) throw new Error('Publication failed.');
+    clear_pending_publication_request();
     if (result.kind === 'published') announce(`Published ${result.commit_sha}. ${result.public_url}`, 'publish');
     else announce(`Committed locally: ${result.commit_sha}. Push or recover it manually before retrying.`, 'publish');
   } catch {

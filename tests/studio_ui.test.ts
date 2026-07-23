@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path';
 import { describe, expect, test } from 'vitest';
 import { render_markdown_preview } from '../src/lib/markdown_preview';
 import { discover_local_images, parse_studio_article } from '../src/lib/studio_article';
-import { feedback_should_focus, is_current_import, is_latest_preview, next_import_sequence, next_tab_index, normalize_article_metadata, publication_feedback, reconcile_image_pairs, safe_storage_get, safe_storage_remove, safe_storage_set } from '../studio/src/main';
+import { feedback_should_focus, is_current_import, is_latest_preview, next_import_sequence, next_tab_index, normalize_article_metadata, publication_feedback, publication_intent_key, publication_request_for_intent, reconcile_image_pairs, safe_storage_get, safe_storage_remove, safe_storage_set } from '../studio/src/main';
 import { create_attention_map } from './fixtures/studio/create_attention_map';
 
 const read_source = (path: string): string => readFileSync(resolve(process.cwd(), path), 'utf8');
@@ -103,6 +103,43 @@ describe('local markdown studio UI contract', () => {
     const draft_type = main.slice(main.indexOf('type studio_draft'), main.indexOf('type storage_adapter'));
     expect(draft_type).not.toContain('session_token');
     expect(main).not.toContain("safe_storage_set(get_storage(), 'session_token'");
+  });
+
+  test('reuses a pending publication request ID only for the identical publication intent', () => {
+    const metadata = normalize_article_metadata({ title: 'Stable request', date: '2026-07-23', slug: 'stable-request' });
+    const intent = { mode: 'new' as const, markdown: '# Stable request', metadata, expected_source_hash: undefined, images: [{ source_path: './diagram.png', file_name: 'diagram.png', file_size: 42, file_last_modified: 1, file_type: 'image/png', intent: 'diagram' as const }] };
+    let created = 0;
+    const create_request_id = (): string => `request-${++created}`;
+
+    const first_request = publication_request_for_intent(undefined, publication_intent_key(intent), create_request_id);
+    const retry_request = publication_request_for_intent(first_request, publication_intent_key(intent), create_request_id);
+    const changed_markdown = publication_request_for_intent(first_request, publication_intent_key({ ...intent, markdown: '# Edited request' }), create_request_id);
+    const changed_metadata = publication_request_for_intent(first_request, publication_intent_key({ ...intent, metadata: { ...metadata, title: 'Edited request' } }), create_request_id);
+    const changed_image = publication_request_for_intent(first_request, publication_intent_key({ ...intent, images: [{ ...intent.images[0]!, file_last_modified: 2 }] }), create_request_id);
+    const changed_mode = publication_request_for_intent(first_request, publication_intent_key({ ...intent, mode: 'update', expected_source_hash: 'a'.repeat(64) }), create_request_id);
+
+    expect(first_request.request_id).toBe('request-1');
+    expect(retry_request).toEqual(first_request);
+    expect(changed_markdown.request_id).toBe('request-2');
+    expect(changed_metadata.request_id).toBe('request-3');
+    expect(changed_image.request_id).toBe('request-4');
+    expect(changed_mode.request_id).toBe('request-5');
+  });
+
+  test('keeps an unresolved publication transaction only in memory and invalidates it for editor changes', () => {
+    const main = read_source('studio/src/main.ts');
+    const draft_type = main.slice(main.indexOf('type studio_draft'), main.indexOf('type storage_adapter'));
+    const schedule_start = main.indexOf('const schedule_preview');
+    const pair_image_start = main.indexOf('const pair_image_file');
+    const publish_start = main.indexOf('const publish');
+
+    expect(draft_type).not.toContain('request_id');
+    expect(main).toContain('let pending_publication');
+    expect(main).toContain('const clear_pending_publication_request');
+    expect(main.indexOf('clear_pending_publication_request();', schedule_start)).toBeGreaterThan(schedule_start);
+    expect(main.indexOf('clear_pending_publication_request();', pair_image_start)).toBeGreaterThan(pair_image_start);
+    expect(main.indexOf('publication_request_for_intent(', publish_start)).toBeGreaterThan(publish_start);
+    expect(main.indexOf('clear_pending_publication_request();', publish_start)).toBeGreaterThan(publish_start);
   });
 
   test('drops stale image pairings and keeps only currently referenced images in source order', () => {
