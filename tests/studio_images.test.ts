@@ -128,4 +128,33 @@ describe('studio_images', () => {
     const adapter = new tencent_cos_adapter({ secret_id: 'id', secret_key: 'key', region: 'ap-guangzhou', bucket: 'bucket-1234567890', root_prefix: 'latent-field', public_base_url: 'https://cdn.example.com' }, factory);
     await expect(adapter.delete_object('../unsafe')).rejects.toMatchObject({ code: 'validation' });
   });
+
+  it('locates destinations without changing matching alt text, labels, escapes, or titles', () => {
+    const result = rewrite_markdown_images('![images/a.png](images/a.png "images/a.png") ![images/a.png][images/a.png]\n\n[images/a.png]: images/a\\(1\\).png "images/a.png"', new Map([['images/a.png', 'https://cdn.example.com/plain.webp'], ['images/a(1).png', 'https://cdn.example.com/escaped.webp']]));
+    expect(result).toBe('![images/a.png](https://cdn.example.com/plain.webp "images/a.png") ![images/a.png][images/a.png]\n\n[images/a.png]: https://cdn.example.com/escaped.webp "images/a.png"');
+  });
+
+  it('rewrites only canonical local Markdown paths', () => {
+    const result = rewrite_markdown_images('![a](a//b.png) ![b](./b.png) ![c](../c.png) ![d](a\\d.png) ![e](<a b.png>)', new Map([['a//b.png', 'https://x/no'], ['./b.png', 'https://x/b'], ['../c.png', 'https://x/no'], ['a\\d.png', 'https://x/no'], ['a b.png', 'https://x/space']]));
+    expect(result).toBe('![a](a//b.png) ![b](https://x/b) ![c](../c.png) ![d](a\\d.png) ![e](<https://x/space>)');
+  });
+
+  it('applies width limits after EXIF orientation and rejects noncanonical public bases', async () => {
+    const oriented = new Uint8Array(await sharp({ create: { width: 10, height: 30, channels: 3, background: '#102030' } }).withMetadata({ orientation: 6 }).jpeg().toBuffer());
+    await expect(prepare_article_images([{ source_path: 'rotated.jpg', bytes: oriented, claimed_content_type: 'image/jpeg', intent: 'photo', semantic_name: 'rotated' }], { root_prefix: 'latent-field', public_base_url: 'https://cdn.example.com/', year: 2026, slug: 'vlm-evaluation', max_bytes: 1_000_000, max_pixels: 1_000_000, max_width: 20, max_height: 40 })).rejects.toMatchObject({ code: 'validation' });
+    for (const public_base_url of [' https://cdn.example.com', 'https://cdn.example.com/a//b', 'https://cdn.example.com/a/../b', 'https://cdn.example.com/a%2fb', 'https://cdn.example.com/a%2eb']) {
+      await expect(prepare_article_images([{ source_path: 'x.png', bytes: await png_bytes(), claimed_content_type: 'image/png', intent: 'diagram', semantic_name: 'x' }], { root_prefix: 'latent-field', public_base_url, year: 2026, slug: 'vlm-evaluation', max_bytes: 1_000_000, max_pixels: 1_000_000, max_width: 100, max_height: 100 })).rejects.toMatchObject({ code: 'validation' });
+    }
+  });
+
+  it('rejects invalid adapter keys before all SDK operations', async () => {
+    let calls = 0;
+    const client = { headObject: async () => { calls += 1; return { headers: { 'x-cos-meta-sha256': 'a'.repeat(64) } }; }, putObject: async () => { calls += 1; return {}; }, deleteObject: async () => { calls += 1; return {}; } };
+    const adapter = new tencent_cos_adapter({ secret_id: 'id', secret_key: 'key', region: 'ap-shanghai', bucket: 'bucket-1234567890', root_prefix: 'latent-field', public_base_url: 'https://cdn.example.com' }, () => client);
+    const bad_key = 'latent-field/articles/2026/vlm-evaluation/fig-1-bad.webp';
+    await expect(adapter.inspect_object(bad_key)).rejects.toMatchObject({ code: 'validation' });
+    await expect(adapter.upload_object({ bytes: new Uint8Array(), content_type: 'image/webp', object_key: bad_key, public_url: 'https://cdn.example.com/x', sha256: 'a'.repeat(64), source_path: 'x.png' })).rejects.toMatchObject({ code: 'validation' });
+    await expect(adapter.delete_object(bad_key)).rejects.toMatchObject({ code: 'validation' });
+    expect(calls).toBe(0);
+  });
 });

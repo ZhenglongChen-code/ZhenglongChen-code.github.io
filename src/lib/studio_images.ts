@@ -31,7 +31,8 @@ const root_prefix = (value: string): string => {
 const public_url = (base: string, object_key: string): string => {
   let parsed: URL;
   try { parsed = new URL(base); } catch { return invalid('Invalid public base URL.'); }
-  if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.search || parsed.hash) invalid('Invalid public base URL.');
+  const raw_path = base.replace(/^https:\/\/[^/]+/, '');
+  if (base.trim() !== base || /%(?:2f|5c|2e)/i.test(base) || parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.search || parsed.hash || /\/(?:\.{1,2})(?:\/|$)/.test(raw_path) || raw_path.includes('//')) invalid('Invalid public base URL.');
   const base_path = parsed.pathname.replace(/\/$/, '');
   return `${parsed.origin}${base_path}/${object_key.split('/').map(encodeURIComponent).join('/')}`;
 };
@@ -39,10 +40,17 @@ const valid_source_path = (source_path: string): boolean => {
   if (!source_path || /[\\\x00-\x1f\x7f\s]/.test(source_path) || /[^\x00-\x7f]/.test(source_path) || /[?#]/.test(source_path) || source_path.startsWith('/') || source_path.startsWith('//') || /^[a-z][a-z0-9+.-]*:/i.test(source_path)) return false;
   let decoded: string;
   try { decoded = decodeURIComponent(source_path); } catch { return false; }
-  if (/%2f/i.test(source_path) || /[\\\x00-\x1f\x7f\s]/.test(decoded) || /[^\x00-\x7f]/.test(decoded) || decoded.split('/').some((part) => part === '..')) return false;
+  const normalized = decoded.startsWith('./') ? decoded.slice(2) : decoded;
+  if (/%(?:2f|5c|2e)/i.test(source_path) || /[\\\x00-\x1f\x7f\s]/.test(decoded) || /[^\x00-\x7f]/.test(decoded) || !normalized || normalized.split('/').some((part) => part === '' || part === '.' || part === '..')) return false;
   return /^(?:\.?\/?[a-zA-Z0-9][a-zA-Z0-9._/-]*)\.(?:png|jpe?g)$/i.test(source_path);
 };
-const local_destination = (value: string): boolean => !/^(?:[a-z][a-z0-9+.-]*:|\/|#|\?)/i.test(value);
+const canonical_local_destination = (value: string): string | undefined => {
+  if (/^(?:[a-z][a-z0-9+.-]*:|\/|#|\?)/i.test(value) || /[\\\x00-\x1f\x7f?#]/.test(value)) return undefined;
+  const normalized = value.startsWith('./') ? value.slice(2) : value;
+  if (!normalized || normalized.startsWith('./')) return undefined;
+  const segments = normalized.split('/');
+  return segments.every((segment) => segment !== '' && segment !== '.' && segment !== '..') ? normalized : undefined;
+};
 
 /** Creates an ASCII-only deterministic image object key. */
 export const build_article_object_key = (input: key_input): string => {
@@ -62,7 +70,10 @@ export const prepare_article_images = async (sources: readonly image_source[], o
     if (source.bytes.byteLength === 0 || source.bytes.byteLength > options.max_bytes || !valid_source_path(source.source_path)) invalid(`Invalid source image: ${source.source_path}`);
     const metadata = await sharp(source.bytes, { limitInputPixels: options.max_pixels, failOn: 'error' }).metadata().catch(() => invalid(`Invalid source image: ${source.source_path}`));
     const detected_content_type = metadata.format === 'jpeg' ? 'image/jpeg' : metadata.format === 'png' ? 'image/png' : undefined;
-    if (!detected_content_type || detected_content_type !== source.claimed_content_type || !metadata.width || !metadata.height || metadata.width > options.max_width || metadata.height > options.max_height || metadata.width * metadata.height > options.max_pixels) invalid(`Invalid source image: ${source.source_path}`);
+    const orientation_swaps_dimensions = metadata.orientation !== undefined && metadata.orientation >= 5 && metadata.orientation <= 8;
+    const oriented_width = orientation_swaps_dimensions ? metadata.height : metadata.width;
+    const oriented_height = orientation_swaps_dimensions ? metadata.width : metadata.height;
+    if (!detected_content_type || detected_content_type !== source.claimed_content_type || !oriented_width || !oriented_height || oriented_width > options.max_width || oriented_height > options.max_height || oriented_width * oriented_height > options.max_pixels) invalid(`Invalid source image: ${source.source_path}`);
     const retain_png = source.intent === 'diagram';
     const content_type = retain_png ? 'image/png' : 'image/webp';
     const output = await (retain_png ? sharp(source.bytes, { limitInputPixels: options.max_pixels }).rotate().png({ compressionLevel: 9, palette: false }).toBuffer() : sharp(source.bytes, { limitInputPixels: options.max_pixels }).rotate().webp({ quality: 82, effort: 6 }).toBuffer()).catch(() => invalid(`Unable to normalize image: ${source.source_path}`));
@@ -76,24 +87,40 @@ export const prepare_article_images = async (sources: readonly image_source[], o
 
 const visit = (node: unknown, callback: (node: markdown_node) => void): void => { if (typeof node !== 'object' || node === null) return; const markdown_node = node as markdown_node; callback(markdown_node); if (Array.isArray(markdown_node.children)) for (const child of markdown_node.children) visit(child, callback); };
 const offsets = (node: markdown_node): { start: number; end: number } | undefined => { const start = node.position?.start.offset; const end = node.position?.end.offset; return typeof start === 'number' && typeof end === 'number' ? { start, end } : undefined; };
+const escaped_end = (source: string, start: number, closing: string): number => { for (let index = start; index < source.length; index += 1) { if (source[index] === '\\') { index += 1; continue; } if (source[index] === closing) return index; } return -1; };
+const inline_destination_range = (source: string): { start: number; end: number } | undefined => {
+  const alt_end = escaped_end(source, 2, ']'); if (alt_end < 0 || source[alt_end + 1] !== '(') return undefined;
+  const destination_start = alt_end + 2;
+  if (source[destination_start] === '<') { const end = escaped_end(source, destination_start + 1, '>'); return end < 0 ? undefined : { start: destination_start + 1, end }; }
+  let depth = 0;
+  for (let index = destination_start; index < source.length; index += 1) { const character = source[index]!; if (character === '\\') { index += 1; continue; } if (character === '(') { depth += 1; continue; } if (character === ')') { if (depth === 0) return { start: destination_start, end: index }; depth -= 1; continue; } if (/\s/.test(character) && depth === 0) return { start: destination_start, end: index }; }
+  return undefined;
+};
+const definition_destination_range = (source: string): { start: number; end: number } | undefined => {
+  const marker = source.indexOf(']:'); if (marker < 0) return undefined; let start = marker + 2; while (/\s/.test(source[start] ?? '')) start += 1;
+  if (source[start] === '<') { const end = escaped_end(source, start + 1, '>'); return end < 0 ? undefined : { start: start + 1, end }; }
+  let end = start; while (end < source.length && !/\s/.test(source[end]!)) { if (source[end] === '\\') end += 1; end += 1; } return end > start ? { start, end } : undefined;
+};
 
 /** Replaces only AST-recognized local image destinations, retaining Markdown syntax and inert code. */
 export const rewrite_markdown_images = (markdown: string, urls: ReadonlyMap<string, string>): string => {
   const tree = unified_processor().use(remark_parse).parse(markdown);
+  const normalized_urls = new Map<string, string>();
+  for (const [source, url] of urls) { const normalized = canonical_local_destination(source); if (normalized !== undefined && !normalized_urls.has(normalized)) normalized_urls.set(normalized, url); }
   const definitions = collect_markdown_definitions(tree);
   const referenced = new Set<string>(); const first_definitions = new Set<markdown_node>(); const known_definitions = new Set<string>(); const replacements: replacement[] = [];
   visit(tree, (node) => {
     if (node.type === 'imageReference' && typeof node.identifier === 'string') referenced.add(node.identifier);
     if (node.type === 'definition' && typeof node.identifier === 'string' && !known_definitions.has(node.identifier)) { known_definitions.add(node.identifier); first_definitions.add(node); }
     if (node.type === 'image' && typeof node.url === 'string') {
-      const replacement_url = local_destination(node.url) ? urls.get(node.url) : undefined; const range = offsets(node);
-      if (replacement_url && range) { const source = markdown.slice(range.start, range.end); const destination_start = source.indexOf(node.url); if (destination_start >= 0) replacements.push({ start: range.start, end: range.end, value: source.slice(0, destination_start) + replacement_url + source.slice(destination_start + node.url.length) }); }
+      const replacement_url = canonical_local_destination(node.url) === undefined ? undefined : normalized_urls.get(canonical_local_destination(node.url)!); const range = offsets(node);
+      if (replacement_url && range) { const source = markdown.slice(range.start, range.end); const destination = inline_destination_range(source); if (destination) replacements.push({ start: range.start, end: range.end, value: source.slice(0, destination.start) + replacement_url + source.slice(destination.end) }); }
     }
   });
   visit(tree, (node) => {
     if (node.type !== 'definition' || typeof node.identifier !== 'string' || typeof node.url !== 'string' || !referenced.has(node.identifier) || !first_definitions.has(node) || definitions.get(node.identifier) === undefined) return;
-    const replacement_url = local_destination(node.url) ? urls.get(node.url) : undefined; const range = offsets(node); if (!replacement_url || !range) return;
-    const source = markdown.slice(range.start, range.end); const destination_start = source.indexOf(node.url); if (destination_start >= 0) replacements.push({ start: range.start, end: range.end, value: source.slice(0, destination_start) + replacement_url + source.slice(destination_start + node.url.length) });
+    const canonical_destination = canonical_local_destination(node.url); const replacement_url = canonical_destination === undefined ? undefined : normalized_urls.get(canonical_destination); const range = offsets(node); if (!replacement_url || !range) return;
+    const source = markdown.slice(range.start, range.end); const destination = definition_destination_range(source); if (destination) replacements.push({ start: range.start, end: range.end, value: source.slice(0, destination.start) + replacement_url + source.slice(destination.end) });
   });
   return [...replacements].sort((left, right) => right.start - left.start).reduce((result, replacement) => result.slice(0, replacement.start) + replacement.value + result.slice(replacement.end), markdown);
 };
@@ -116,10 +143,10 @@ export type tencent_cos_config = { secret_id: string; secret_key: string; region
 type cos_client = { headObject(input: { Bucket: string; Region: string; Key: string }): Promise<{ headers?: Record<string, string | undefined> }>; putObject(input: { Bucket: string; Region: string; Key: string; Body: Buffer; ContentLength: number; ContentType: string; 'x-cos-meta-sha256': string }): Promise<unknown>; deleteObject(input: { Bucket: string; Region: string; Key: string }): Promise<unknown> };
 type cos_client_factory = (config: tencent_cos_config) => cos_client;
 const valid_cos_config = (config: tencent_cos_config): void => {
-  if (!config.secret_id.trim() || !config.secret_key.trim() || !/^(?:ap|na|eu|sa|cn)-[a-z0-9-]+$/.test(config.region) || !/^[a-z0-9][a-z0-9-]{0,54}-\d{10}$/.test(config.bucket)) invalid('Invalid COS configuration.');
+  if (!config.secret_id.trim() || !config.secret_key.trim() || /\s/.test(config.secret_id) || /\s/.test(config.secret_key) || !/^(?:ap|na|eu|sa|cn)-[a-z0-9]+(?:-[a-z0-9]+)*$/.test(config.region) || !/^[a-z0-9]+(?:-[a-z0-9]+)*-\d{10}$/.test(config.bucket)) invalid('Invalid COS configuration.');
   root_prefix(config.root_prefix); public_url(config.public_base_url, 'test');
 };
-const valid_adapter_key = (object_key: string, prefix: string): void => { if (!object_key_pattern.test(object_key) || !object_key.startsWith(`${prefix}/articles/`)) invalid('Invalid COS object key.'); };
+const valid_adapter_key = (object_key: string, prefix: string): void => { const escaped_prefix = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); if (!new RegExp(`^${escaped_prefix}/articles/\\d{4}/${component_pattern.source.slice(1, -1)}/(?:cover|fig-\\d{2}-${component_pattern.source.slice(1, -1)})\\.(?:webp|png)$`).test(object_key)) invalid('Invalid COS object key.'); };
 /** Tencent COS adapter. Construction is local-only and does not initiate network traffic. */
 export class tencent_cos_adapter implements cos_adapter {
   private readonly client: cos_client;
