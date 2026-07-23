@@ -32,6 +32,7 @@ textarea { resize: vertical; }
 .image-item { border-top: 1px solid var(--rule); padding: 9px 0; }
 .image-item strong, .image-item span { display: block; overflow-wrap: anywhere; }
 .image-item input { margin: 6px 0; font-size: 11px; }
+.image-item input[type="file"] { clip: rect(0 0 0 0); height: 1px; overflow: hidden; position: absolute; width: 1px; }
 .image-item button { min-height: 34px; padding: .3rem .5rem; font-size: 10px; }
 .workbench { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr auto; padding: 0 0 0 28px; }
 .workbench-topline { align-items: center; border-bottom: 1px solid var(--ink); display: flex; gap: 20px; min-height: 68px; }

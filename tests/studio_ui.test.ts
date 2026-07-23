@@ -40,6 +40,15 @@ describe('local markdown studio UI contract', () => {
     expect(studio_css).toMatch(/#markdown-source[^}]+font-family: var\(--mono\)/);
   });
 
+  test('visually hides each native image chooser while retaining its custom control', () => {
+    const main = read_source('studio/src/main.ts');
+    const studio_css = read_source('studio/src/studio.css');
+
+    expect(main).toContain("image_input.type = 'file'");
+    expect(main).toContain("select_image.addEventListener('click', () => image_input.click())");
+    expect(studio_css).toContain('.image-item input[type="file"] { clip: rect(0 0 0 0); height: 1px; overflow: hidden; position: absolute; width: 1px; }');
+  });
+
   test('uses roving tab logic and ignores stale preview responses', () => {
     expect(next_tab_index(0, 'ArrowRight', 2)).toBe(1);
     expect(next_tab_index(0, 'ArrowLeft', 2)).toBe(1);
