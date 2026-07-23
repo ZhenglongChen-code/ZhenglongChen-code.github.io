@@ -7,14 +7,15 @@ import { collect_markdown_definitions } from './markdown_preview';
 
 export type image_intent = 'photo' | 'screenshot' | 'diagram';
 export type prepared_image = { bytes: Uint8Array; content_type: 'image/webp' | 'image/png'; object_key: string; public_url: string; sha256: string; source_path: string };
-export interface cos_adapter { inspect_object(object_key: string): Promise<{ sha256: string } | undefined>; upload_object(input: prepared_image): Promise<void>; delete_object(object_key: string): Promise<void>; }
+export interface cos_adapter { verify_versioning(): Promise<void>; inspect_object(object_key: string): Promise<{ sha256: string } | undefined>; upload_object(input: prepared_image): Promise<{ version_id: string }>; delete_object(object_key: string, version_id: string): Promise<void>; }
 export type image_source = { source_path: string; bytes: Uint8Array; claimed_content_type: 'image/jpeg' | 'image/png'; intent: image_intent; semantic_name: string };
-export type image_preparation_options = { root_prefix: string; public_base_url: string; year: number; slug: string; max_bytes: number; max_pixels: number; max_width: number; max_height: number };
+export type image_preparation_options = { root_prefix: string; public_base_url: string; year: number; slug: string; max_bytes: number; max_pixels: number; max_width: number; max_height: number; max_images?: number; max_total_input_bytes?: number; max_total_output_bytes?: number };
 export type image_manifest_entry = { source_path: string; object_key: string; public_url: string };
-export type published_image = prepared_image & { status: 'created' | 'reused' };
+export type published_image = prepared_image & ({ status: 'created'; version_id: string } | { status: 'reused' });
 export type publish_result = { objects: published_image[]; manifest: image_manifest_entry[] };
 export type cleanup_result = { deleted: string[]; failures: string[] };
-export class studio_image_error extends Error { constructor(readonly code: 'validation' | 'collision' | 'missing_remote_digest', message: string) { super(message); this.name = 'studio_image_error'; } }
+export class studio_image_error extends Error { constructor(readonly code: 'validation' | 'collision' | 'missing_remote_digest' | 'untracked_create', message: string) { super(message); this.name = 'studio_image_error'; } }
+export class studio_image_publish_error extends Error { constructor(readonly code: 'collision' | 'untracked_create', readonly successful_objects: readonly published_image[], message: string) { super(message); this.name = 'studio_image_publish_error'; this.successful_objects = Object.freeze([...successful_objects]); } }
 
 type key_input = { root_prefix: string; year: number; slug: string; figure_number: number; semantic_name: string; extension: string };
 type markdown_node = { type?: unknown; url?: unknown; identifier?: unknown; children?: unknown; position?: { start: { offset?: number }; end: { offset?: number } } };
@@ -68,9 +69,18 @@ export const build_article_object_key = (input: key_input): string => {
 export const prepare_article_images = async (sources: readonly image_source[], options: image_preparation_options): Promise<{ images: prepared_image[] }> => {
   root_prefix(options.root_prefix); public_url(options.public_base_url, 'test');
   if (!Number.isSafeInteger(options.max_bytes) || options.max_bytes < 1 || !Number.isSafeInteger(options.max_pixels) || options.max_pixels < 1 || !Number.isSafeInteger(options.max_width) || options.max_width < 1 || !Number.isSafeInteger(options.max_height) || options.max_height < 1) invalid('Invalid image limits.');
+  const max_images = options.max_images ?? 20; const max_total_input_bytes = options.max_total_input_bytes ?? options.max_bytes * max_images; const max_total_output_bytes = options.max_total_output_bytes ?? options.max_bytes * max_images;
+  if (!Number.isSafeInteger(max_images) || max_images < 1 || !Number.isSafeInteger(max_total_input_bytes) || max_total_input_bytes < 1 || !Number.isSafeInteger(max_total_output_bytes) || max_total_output_bytes < 1 || sources.length > max_images) invalid('Invalid image manifest limits.');
+  const source_paths = new Set<string>(); let total_input_bytes = 0;
+  for (const source of sources) {
+    const decoded_source = decoded_path_segment(source.source_path); const canonical_source = decoded_source?.startsWith('./') ? decoded_source.slice(2) : decoded_source;
+    if (!canonical_source || source_paths.has(canonical_source) || !valid_source_path(source.source_path) || !component_pattern.test(source.semantic_name) || !['photo', 'screenshot', 'diagram'].includes(source.intent) || source.bytes.byteLength === 0 || source.bytes.byteLength > options.max_bytes) invalid(`Invalid source image: ${source.source_path}`);
+    source_paths.add(canonical_source!); total_input_bytes += source.bytes.byteLength;
+  }
+  if (total_input_bytes > max_total_input_bytes) invalid('Input image bytes exceed manifest limit.');
   const images: prepared_image[] = [];
+  let total_output_bytes = 0;
   for (const [index, source] of sources.entries()) {
-    if (source.bytes.byteLength === 0 || source.bytes.byteLength > options.max_bytes || !valid_source_path(source.source_path)) invalid(`Invalid source image: ${source.source_path}`);
     const metadata = await sharp(source.bytes, { limitInputPixels: options.max_pixels, failOn: 'error' }).metadata().catch(() => invalid(`Invalid source image: ${source.source_path}`));
     const detected_content_type = metadata.format === 'jpeg' ? 'image/jpeg' : metadata.format === 'png' ? 'image/png' : undefined;
     const orientation_swaps_dimensions = metadata.orientation !== undefined && metadata.orientation >= 5 && metadata.orientation <= 8;
@@ -80,6 +90,7 @@ export const prepare_article_images = async (sources: readonly image_source[], o
     const retain_png = source.intent === 'diagram';
     const content_type = retain_png ? 'image/png' : 'image/webp';
     const output = await (retain_png ? sharp(source.bytes, { limitInputPixels: options.max_pixels }).rotate().png({ compressionLevel: 9, palette: false }).toBuffer() : sharp(source.bytes, { limitInputPixels: options.max_pixels }).rotate().webp({ quality: 82, effort: 6 }).toBuffer()).catch(() => invalid(`Unable to normalize image: ${source.source_path}`));
+    total_output_bytes += output.byteLength; if (total_output_bytes > max_total_output_bytes) invalid('Output image bytes exceed manifest limit.');
     const extension = content_type === 'image/png' ? 'png' : 'webp';
     const object_key = build_article_object_key({ ...options, figure_number: index + 1, semantic_name: source.semantic_name, extension });
     const bytes = new Uint8Array(output);
@@ -132,19 +143,39 @@ export const rewrite_markdown_images = (markdown: string, urls: ReadonlyMap<stri
 /** Uploads only absent objects, allowing exact-digest idempotent reuse. */
 export const publish_prepared_images = async (images: readonly prepared_image[], adapter: cos_adapter): Promise<publish_result> => {
   const objects: published_image[] = [];
-  for (const image of images) { const existing = await adapter.inspect_object(image.object_key); if (existing && existing.sha256 !== image.sha256) throw new studio_image_error('collision', `Object collision: ${image.object_key}`); if (!existing) await adapter.upload_object(image); objects.push({ ...image, status: existing ? 'reused' : 'created' }); }
+  await adapter.verify_versioning();
+  for (const image of images) {
+    const owned_bytes = new Uint8Array(image.bytes); const owned_digest = sha256(owned_bytes);
+    if (owned_digest !== image.sha256) throw new studio_image_publish_error('untracked_create', objects, `Prepared image bytes changed: ${image.object_key}`);
+    const owned_image = { ...image, bytes: owned_bytes };
+    const existing = await adapter.inspect_object(image.object_key);
+    if (existing && existing.sha256 !== image.sha256) throw new studio_image_publish_error('collision', objects, `Object collision: ${image.object_key}`);
+    if (existing) { objects.push({ ...owned_image, status: 'reused' }); continue; }
+    try {
+      const created = await adapter.upload_object(owned_image);
+      if (!created.version_id) throw new studio_image_publish_error('untracked_create', objects, `Created object lacks a version token: ${image.object_key}`);
+      objects.push({ ...owned_image, status: 'created', version_id: created.version_id });
+    } catch (error: unknown) {
+      if (error instanceof studio_image_publish_error) throw error;
+      const precondition_failed = typeof error === 'object' && error !== null && 'statusCode' in error && (error as { statusCode?: unknown }).statusCode === 412;
+      if (!precondition_failed) throw error;
+      const raced = await adapter.inspect_object(image.object_key);
+      if (raced?.sha256 === image.sha256) objects.push({ ...owned_image, status: 'reused' });
+      else throw new studio_image_publish_error('collision', objects, `Object collision: ${image.object_key}`);
+    }
+  }
   return { objects, manifest: objects.map(({ source_path, object_key, public_url }) => ({ source_path, object_key, public_url })) };
 };
 
 /** Deletes only objects created during the current request and reports all best-effort failures. */
 export const cleanup_created_images = async (objects: readonly published_image[], adapter: cos_adapter): Promise<cleanup_result> => {
   const deleted: string[] = []; const failures: string[] = [];
-  for (const object of objects) if (object.status === 'created') try { await adapter.delete_object(object.object_key); deleted.push(object.object_key); } catch { failures.push(object.object_key); }
+  for (const object of objects) if (object.status === 'created') try { await adapter.delete_object(object.object_key, object.version_id); deleted.push(object.object_key); } catch { failures.push(object.object_key); }
   return { deleted, failures };
 };
 
 export type tencent_cos_config = { secret_id: string; secret_key: string; region: string; bucket: string; public_base_url: string; root_prefix: string };
-type cos_client = { headObject(input: { Bucket: string; Region: string; Key: string }): Promise<{ headers?: Record<string, string | undefined> }>; putObject(input: { Bucket: string; Region: string; Key: string; Body: Buffer; ContentLength: number; ContentType: string; 'x-cos-meta-sha256': string }): Promise<unknown>; deleteObject(input: { Bucket: string; Region: string; Key: string }): Promise<unknown> };
+type cos_client = { getBucketVersioning(input: { Bucket: string; Region: string }): Promise<{ VersioningConfiguration: { Status: 'Enabled' | 'Suspended' } }>; headObject(input: { Bucket: string; Region: string; Key: string }): Promise<{ headers?: Record<string, string | undefined> }>; putObject(input: { Bucket: string; Region: string; Key: string; Headers: { 'If-None-Match': '*' }; Body: Buffer; ContentLength: number; ContentType: string; 'x-cos-meta-sha256': string }): Promise<{ VersionId?: string }>; deleteObject(input: { Bucket: string; Region: string; Key: string; VersionId: string }): Promise<unknown> };
 type cos_client_factory = (config: tencent_cos_config) => cos_client;
 const valid_cos_config = (config: tencent_cos_config): void => {
   if (!config.secret_id.trim() || !config.secret_key.trim() || /[\x00-\x20\x7f-\x9f]/.test(config.secret_id) || /[\x00-\x20\x7f-\x9f]/.test(config.secret_key) || !/^(?:ap|na|eu|sa|cn)-[a-z0-9]+(?:-[a-z0-9]+)*$/.test(config.region) || !/^[a-z0-9]+(?:-[a-z0-9]+)*-\d{10}$/.test(config.bucket)) invalid('Invalid COS configuration.');
@@ -161,7 +192,8 @@ export class tencent_cos_adapter implements cos_adapter {
     valid_cos_config(config);
     this.client = client_factory(config);
   }
+  async verify_versioning(): Promise<void> { const result = await this.client.getBucketVersioning({ Bucket: this.config.bucket, Region: this.config.region }); if (result.VersioningConfiguration.Status !== 'Enabled') throw new studio_image_error('validation', 'COS bucket versioning must be enabled.'); }
   async inspect_object(object_key: string): Promise<{ sha256: string } | undefined> { valid_adapter_key(object_key, this.config.root_prefix); try { const result = await this.client.headObject({ Bucket: this.config.bucket, Region: this.config.region, Key: object_key }); const value = result.headers?.['x-cos-meta-sha256']; if (typeof value !== 'string' || !/^[a-f0-9]{64}$/i.test(value)) throw new studio_image_error('missing_remote_digest', `COS object lacks a valid sha256 digest: ${object_key}`); return { sha256: value.toLowerCase() }; } catch (error: unknown) { if (typeof error === 'object' && error !== null && 'statusCode' in error && (error as { statusCode?: unknown }).statusCode === 404) return undefined; throw error; } }
-  async upload_object(input: prepared_image): Promise<void> { valid_adapter_key(input.object_key, this.config.root_prefix); await this.client.putObject({ Bucket: this.config.bucket, Region: this.config.region, Key: input.object_key, Body: Buffer.from(input.bytes), ContentLength: input.bytes.byteLength, ContentType: input.content_type, 'x-cos-meta-sha256': input.sha256 }); }
-  async delete_object(object_key: string): Promise<void> { valid_adapter_key(object_key, this.config.root_prefix); await this.client.deleteObject({ Bucket: this.config.bucket, Region: this.config.region, Key: object_key }); }
+  async upload_object(input: prepared_image): Promise<{ version_id: string }> { valid_adapter_key(input.object_key, this.config.root_prefix); const bytes = new Uint8Array(input.bytes); if (sha256(bytes) !== input.sha256) throw new studio_image_error('untracked_create', `Image bytes changed: ${input.object_key}`); const result = await this.client.putObject({ Bucket: this.config.bucket, Region: this.config.region, Key: input.object_key, Headers: { 'If-None-Match': '*' }, Body: Buffer.from(bytes), ContentLength: bytes.byteLength, ContentType: input.content_type, 'x-cos-meta-sha256': input.sha256 }); if (!result.VersionId) throw new studio_image_error('untracked_create', `COS create returned no version id: ${input.object_key}`); return { version_id: result.VersionId }; }
+  async delete_object(object_key: string, version_id: string): Promise<void> { valid_adapter_key(object_key, this.config.root_prefix); if (!version_id) invalid('Invalid COS version id.'); await this.client.deleteObject({ Bucket: this.config.bucket, Region: this.config.region, Key: object_key, VersionId: version_id }); }
 }

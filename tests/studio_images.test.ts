@@ -20,9 +20,10 @@ class fake_cos_adapter implements cos_adapter {
   readonly uploads: string[] = [];
   readonly deletes: string[] = [];
   readonly delete_failures = new Set<string>();
+  async verify_versioning(): Promise<void> {}
   async inspect_object(object_key: string): Promise<{ sha256: string } | undefined> { const sha256 = this.objects.get(object_key); return sha256 === undefined ? undefined : { sha256 }; }
-  async upload_object(input: { object_key: string; sha256: string }): Promise<void> { this.uploads.push(input.object_key); this.objects.set(input.object_key, input.sha256); }
-  async delete_object(object_key: string): Promise<void> { this.deletes.push(object_key); if (this.delete_failures.has(object_key)) throw new Error('delete failed'); this.objects.delete(object_key); }
+  async upload_object(input: { object_key: string; sha256: string }): Promise<{ version_id: string }> { this.uploads.push(input.object_key); this.objects.set(input.object_key, input.sha256); return { version_id: `version-${this.uploads.length}` }; }
+  async delete_object(object_key: string, version_id: string): Promise<void> { if (!version_id) throw new Error('missing version'); this.deletes.push(object_key); if (this.delete_failures.has(object_key)) throw new Error('delete failed'); this.objects.delete(object_key); }
 }
 
 describe('studio_images', () => {
@@ -113,20 +114,20 @@ describe('studio_images', () => {
 
   it('treats missing remote digests as a safe COS failure and only 404 as absent', async () => {
     const valid_config = { secret_id: 'id', secret_key: 'key', region: 'ap-guangzhou', bucket: 'bucket-1234567890', root_prefix: 'latent-field', public_base_url: 'https://cdn.example.com' };
-    const missing_digest_client = { headObject: async () => ({ headers: {} }), putObject: async () => ({}), deleteObject: async () => ({}) };
+    const missing_digest_client = { getBucketVersioning: async () => ({ VersioningConfiguration: { Status: 'Enabled' as const } }), headObject: async () => ({ headers: {} }), putObject: async () => ({ VersionId: 'v' }), deleteObject: async () => ({}) };
     const missing_digest_adapter = new tencent_cos_adapter(valid_config, () => missing_digest_client);
     await expect(missing_digest_adapter.inspect_object('latent-field/articles/2026/vlm-evaluation/fig-01-map.webp')).rejects.toMatchObject({ code: 'missing_remote_digest' });
-    const absent_client = { headObject: async () => { throw { statusCode: 404 }; }, putObject: async () => ({}), deleteObject: async () => ({}) };
+    const absent_client = { getBucketVersioning: async () => ({ VersioningConfiguration: { Status: 'Enabled' as const } }), headObject: async () => { throw { statusCode: 404 }; }, putObject: async () => ({ VersionId: 'v' }), deleteObject: async () => ({}) };
     await expect(new tencent_cos_adapter(valid_config, () => absent_client).inspect_object('latent-field/articles/2026/vlm-evaluation/fig-01-map.webp')).resolves.toBeUndefined();
   });
 
   it('rejects invalid COS config and object keys before creating or calling a client', async () => {
     let factory_calls = 0;
-    const factory = () => { factory_calls += 1; return { headObject: async () => ({ headers: { 'x-cos-meta-sha256': 'x' } }), putObject: async () => ({}), deleteObject: async () => ({}) }; };
+    const factory = () => { factory_calls += 1; return { getBucketVersioning: async () => ({ VersioningConfiguration: { Status: 'Enabled' as const } }), headObject: async () => ({ headers: { 'x-cos-meta-sha256': 'x' } }), putObject: async () => ({ VersionId: 'v' }), deleteObject: async () => ({}) }; };
     expect(() => new tencent_cos_adapter({ secret_id: ' ', secret_key: 'key', region: 'bad region', bucket: 'bucket', root_prefix: '../x', public_base_url: 'http://user:pass@example.com' }, factory)).toThrow(/invalid/i);
     expect(factory_calls).toBe(0);
     const adapter = new tencent_cos_adapter({ secret_id: 'id', secret_key: 'key', region: 'ap-guangzhou', bucket: 'bucket-1234567890', root_prefix: 'latent-field', public_base_url: 'https://cdn.example.com' }, factory);
-    await expect(adapter.delete_object('../unsafe')).rejects.toMatchObject({ code: 'validation' });
+    await expect(adapter.delete_object('../unsafe', 'v')).rejects.toMatchObject({ code: 'validation' });
   });
 
   it('locates destinations without changing matching alt text, labels, escapes, or titles', () => {
@@ -149,12 +150,12 @@ describe('studio_images', () => {
 
   it('rejects invalid adapter keys before all SDK operations', async () => {
     let calls = 0;
-    const client = { headObject: async () => { calls += 1; return { headers: { 'x-cos-meta-sha256': 'a'.repeat(64) } }; }, putObject: async () => { calls += 1; return {}; }, deleteObject: async () => { calls += 1; return {}; } };
+    const client = { getBucketVersioning: async () => ({ VersioningConfiguration: { Status: 'Enabled' as const } }), headObject: async () => { calls += 1; return { headers: { 'x-cos-meta-sha256': 'a'.repeat(64) } }; }, putObject: async () => { calls += 1; return { VersionId: 'v' }; }, deleteObject: async () => { calls += 1; return {}; } };
     const adapter = new tencent_cos_adapter({ secret_id: 'id', secret_key: 'key', region: 'ap-shanghai', bucket: 'bucket-1234567890', root_prefix: 'latent-field', public_base_url: 'https://cdn.example.com' }, () => client);
     const bad_key = 'latent-field/articles/2026/vlm-evaluation/fig-1-bad.webp';
     await expect(adapter.inspect_object(bad_key)).rejects.toMatchObject({ code: 'validation' });
     await expect(adapter.upload_object({ bytes: new Uint8Array(), content_type: 'image/webp', object_key: bad_key, public_url: 'https://cdn.example.com/x', sha256: 'a'.repeat(64), source_path: 'x.png' })).rejects.toMatchObject({ code: 'validation' });
-    await expect(adapter.delete_object(bad_key)).rejects.toMatchObject({ code: 'validation' });
+    await expect(adapter.delete_object(bad_key, 'v')).rejects.toMatchObject({ code: 'validation' });
     expect(calls).toBe(0);
   });
 
@@ -169,7 +170,7 @@ describe('studio_images', () => {
   });
 
   it('accepts every builder key at the COS boundary and rejects hierarchy near misses', async () => {
-    const client = { headObject: async () => ({ headers: { 'x-cos-meta-sha256': 'a'.repeat(64) } }), putObject: async () => ({}), deleteObject: async () => ({}) };
+    const client = { getBucketVersioning: async () => ({ VersioningConfiguration: { Status: 'Enabled' as const } }), headObject: async () => ({ headers: { 'x-cos-meta-sha256': 'a'.repeat(64) } }), putObject: async () => ({ VersionId: 'v' }), deleteObject: async () => ({}) };
     const adapter = new tencent_cos_adapter({ secret_id: 'id', secret_key: 'key', region: 'ap-shanghai', bucket: 'bucket-1234567890', root_prefix: 'latent-field', public_base_url: 'https://cdn.example.com' }, () => client);
     const built = build_article_object_key({ root_prefix: 'latent-field', year: 2026, slug: 'vlm-evaluation', figure_number: 100, semantic_name: 'map', extension: 'webp' });
     await expect(adapter.inspect_object(built)).resolves.toEqual({ sha256: 'a'.repeat(64) });
@@ -178,7 +179,7 @@ describe('studio_images', () => {
 
   it('rejects raw backslashes in public bases and credential controls before client construction', () => {
     let calls = 0;
-    const factory = () => { calls += 1; return { headObject: async () => ({ headers: {} }), putObject: async () => ({}), deleteObject: async () => ({}) }; };
+    const factory = () => { calls += 1; return { getBucketVersioning: async () => ({ VersioningConfiguration: { Status: 'Enabled' as const } }), headObject: async () => ({ headers: {} }), putObject: async () => ({ VersionId: 'v' }), deleteObject: async () => ({}) }; };
     expect(() => new tencent_cos_adapter({ secret_id: 'id\n', secret_key: 'key', region: 'ap-shanghai', bucket: 'bucket-1234567890', root_prefix: 'latent-field', public_base_url: 'https://cdn.example.com\\evil' }, factory)).toThrow(/invalid/i);
     expect(calls).toBe(0);
   });
@@ -191,7 +192,7 @@ describe('studio_images', () => {
   });
 
   it('accepts exactly builder-shaped figure sequences at the adapter boundary', async () => {
-    const client = { headObject: async () => ({ headers: { 'x-cos-meta-sha256': 'a'.repeat(64) } }), putObject: async () => ({}), deleteObject: async () => ({}) };
+    const client = { getBucketVersioning: async () => ({ VersioningConfiguration: { Status: 'Enabled' as const } }), headObject: async () => ({ headers: { 'x-cos-meta-sha256': 'a'.repeat(64) } }), putObject: async () => ({ VersionId: 'v' }), deleteObject: async () => ({}) };
     const adapter = new tencent_cos_adapter({ secret_id: 'id', secret_key: 'key', region: 'ap-shanghai', bucket: 'bucket-1234567890', root_prefix: 'latent-field', public_base_url: 'https://cdn.example.com' }, () => client);
     for (const figure of [1, 9, 10, 100]) await expect(adapter.inspect_object(build_article_object_key({ root_prefix: 'latent-field', year: 2026, slug: 'vlm-evaluation', figure_number: figure, semantic_name: 'map', extension: 'webp' }))).resolves.toBeDefined();
     for (const sequence of ['00', '0001', '010']) await expect(adapter.inspect_object(`latent-field/articles/2026/vlm-evaluation/fig-${sequence}-map.webp`)).rejects.toMatchObject({ code: 'validation' });
@@ -207,8 +208,19 @@ describe('studio_images', () => {
   it('normalizes valid uppercase remote digests before idempotent reuse', async () => {
     const prepared = (await prepare_article_images([{ source_path: 'x.png', bytes: await png_bytes(), claimed_content_type: 'image/png', intent: 'diagram', semantic_name: 'map' }], { root_prefix: 'latent-field', public_base_url: 'https://cdn.example.com', year: 2026, slug: 'vlm-evaluation', max_bytes: 1_000_000, max_pixels: 1_000_000, max_width: 100, max_height: 100 })).images;
     const image = prepared[0]!;
-    const client = { headObject: async () => ({ headers: { 'x-cos-meta-sha256': image.sha256.toUpperCase() } }), putObject: async () => ({}), deleteObject: async () => ({}) };
+    const client = { getBucketVersioning: async () => ({ VersioningConfiguration: { Status: 'Enabled' as const } }), headObject: async () => ({ headers: { 'x-cos-meta-sha256': image.sha256.toUpperCase() } }), putObject: async () => ({ VersionId: 'v' }), deleteObject: async () => ({}) };
     const adapter = new tencent_cos_adapter({ secret_id: 'id', secret_key: 'key', region: 'ap-shanghai', bucket: 'bucket-1234567890', root_prefix: 'latent-field', public_base_url: 'https://cdn.example.com' }, () => client);
     await expect(publish_prepared_images(prepared, adapter)).resolves.toMatchObject({ objects: [{ status: 'reused' }] });
+  });
+
+  it('uses versioned create-only ownership and cleanup tokens', async () => {
+    const image = (await prepare_article_images([{ source_path: 'x.png', bytes: await png_bytes(), claimed_content_type: 'image/png', intent: 'diagram', semantic_name: 'map' }], { root_prefix: 'latent-field', public_base_url: 'https://cdn.example.com', year: 2026, slug: 'vlm-evaluation', max_bytes: 1_000_000, max_pixels: 1_000_000, max_width: 100, max_height: 100 })).images[0]!;
+    const calls: unknown[] = [];
+    const client = { getBucketVersioning: async () => ({ VersioningConfiguration: { Status: 'Enabled' as const } }), headObject: async () => { throw { statusCode: 404 }; }, putObject: async (input: unknown) => { calls.push(input); return { VersionId: 'version-1' }; }, deleteObject: async (input: unknown) => { calls.push(input); return {}; } };
+    const adapter = new tencent_cos_adapter({ secret_id: 'id', secret_key: 'key', region: 'ap-shanghai', bucket: 'bucket-1234567890', root_prefix: 'latent-field', public_base_url: 'https://cdn.example.com' }, () => client);
+    const published = await publish_prepared_images([image], adapter);
+    expect(published.objects[0]).toMatchObject({ status: 'created', version_id: 'version-1' });
+    await cleanup_created_images(published.objects, adapter);
+    expect(calls).toEqual(expect.arrayContaining([expect.objectContaining({ Headers: { 'If-None-Match': '*' } }), expect.objectContaining({ VersionId: 'version-1' })]));
   });
 });
