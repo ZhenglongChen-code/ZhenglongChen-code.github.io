@@ -65,7 +65,23 @@ export const reconcile_image_pairs = (sources: readonly string[], files: Readonl
 
 /** Maps server-controlled result codes to fixed browser-safe recovery guidance. */
 export const publication_feedback = (result: Extract<publish_result, { kind: 'failed' | 'recovery_required' }>): string => {
-  const messages = result.errors.map((error) => error.code === 'image_pairing' ? 'Pair every referenced image.' : error.code === 'stale_source' ? 'The article changed since it was loaded; re-import it before updating.' : error.code === 'request_id_conflict' ? 'This publication request conflicted; retry from the current draft.' : error.code.includes('git') || error.code.includes('push') ? 'Inspect the local Git state and push normally without force.' : error.code === 'validation' ? `Correct ${error.field ?? 'the highlighted fields'} and retry.` : 'Publication needs local review before retrying.');
+  const safe_field = (field: string | undefined): string => field !== undefined && /^[A-Za-z][A-Za-z0-9_.[\]-]{0,99}$/.test(field) ? field : 'the highlighted fields';
+  const messages = result.errors.map((error) => {
+    const code = error.code;
+    if (code === 'validation' || code === 'image_pairing' || code === 'image_validation' || code === 'not_publishable' || code.startsWith('invalid_')) return `Validation: correct ${safe_field(error.field)} and retry.`;
+    if (code.includes('image') || code === 'collision' || code === 'pending_upload') return 'Image upload: check image pairing and local image recovery before retrying.';
+    if (code === 'stale_source') return 'The article changed since it was loaded; re-import it before updating.';
+    if (code === 'baseline_changed') return 'The publication branch advanced; refresh the local branch and re-import before retrying.';
+    if (code === 'target_dirty') return 'Resolve local modifications to the target article before retrying.';
+    if (code === 'article_exists') return 'This article already exists; choose Update instead of New.';
+    if (code === 'article_missing') return 'This article does not exist; choose New instead of Update.';
+    if (code === 'wrong_branch') return 'Git: switch to the configured publication branch before retrying.';
+    if (code === 'repository_busy') return 'Git: finish or abort the active Git operation before retrying.';
+    if (code === 'unsafe_path') return 'Git: review the local repository configuration before retrying.';
+    if (code === 'git_failed' || code === 'push_failed' || code.includes('critical') || code.includes('git')) return 'Git: inspect the local Git state and push normally without force.';
+    if (code === 'request_id_conflict' || code === 'request_claimed' || code.includes('journal') || code.includes('corrupt') || code.includes('recovery') || code.includes('claim')) return 'Transaction recovery: inspect the local transaction before retrying; do not blindly retry.';
+    return 'Publication needs local review before retrying.';
+  });
   return [...new Set(messages)].join(' ');
 };
 

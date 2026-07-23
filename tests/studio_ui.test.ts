@@ -103,7 +103,22 @@ describe('local markdown studio UI contract', () => {
 
   test('maps structured publication errors to actionable fixed text', () => {
     expect(publication_feedback({ kind: 'failed', errors: [{ code: 'stale_source', field: 'slug', message: 'secret path' }] })).toContain('changed since it was loaded');
-    expect(publication_feedback({ kind: 'recovery_required', errors: [{ code: 'git_ambiguous', message: 'secret path' }] })).toContain('Inspect the local Git state');
+    expect(publication_feedback({ kind: 'recovery_required', errors: [{ code: 'git_ambiguous', message: 'secret path' }] })).toContain('Git: inspect the local Git state');
+  });
+
+  test('classifies every safe publication recovery category without reflecting server text', () => {
+    const feedback = publication_feedback({ kind: 'failed', errors: [
+      { code: 'invalid_metadata', field: 'metadata.title', message: 'secret validation' },
+      { code: 'image_collision', message: 'secret image path' },
+      { code: 'target_dirty', message: 'secret git state' },
+      { code: 'wrong_branch', message: 'secret branch' },
+      { code: 'request_claimed', message: 'secret journal' },
+      { code: 'unknown_code', field: '<script>', message: 'secret fallback' },
+    ] });
+    for (const phrase of ['Validation', 'Image upload', 'local modifications', 'Git', 'Transaction recovery', 'local review']) expect(feedback).toContain(phrase);
+    expect(feedback).toContain('metadata.title');
+    expect(feedback).not.toContain('secret');
+    expect(feedback).not.toContain('<script>');
   });
 
   test('invalidates an in-flight preview before the next debounce window', () => {
