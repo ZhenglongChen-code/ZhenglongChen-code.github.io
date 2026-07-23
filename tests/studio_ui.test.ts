@@ -173,6 +173,19 @@ describe('local markdown studio UI contract', () => {
     expect(studio_css).toContain('.quiet-feedback { min-width: 0; overflow-wrap: anywhere;');
   });
 
+  test('bundles KaTeX and bounds rendered math or code without external favicon requests', () => {
+    const main = read_source('studio/src/main.ts');
+    const studio_css = read_source('studio/src/studio.css');
+    const studio_html = read_source('studio/index.html');
+    const base_layout = read_source('src/layouts/base_layout.astro');
+
+    expect(main).toContain("import 'katex/dist/katex.min.css';");
+    expect(studio_css).toContain('.markdown-preview .katex-display { max-width: 100%; overflow-x: auto; overflow-y: hidden; }');
+    expect(studio_css).toContain('.markdown-preview pre { max-width: 100%; overflow-x: auto; }');
+    expect(studio_html).toContain('<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,');
+    expect(base_layout).toContain('<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,');
+  });
+
   test('clears prior proof only when a newest import is ready to apply', () => {
     const main = read_source('studio/src/main.ts');
     const reset_start = main.indexOf('const reset_document_state');

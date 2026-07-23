@@ -48,6 +48,8 @@ textarea { resize: vertical; }
 .preview-panel { min-width: 0; padding: 17px 0 20px 25px; }
 #preview-marker { color: var(--cobalt); }
 .markdown-preview { font-family: var(--serif); font-size: 17px; line-height: 1.68; max-width: 700px; padding-top: 6px; }
+.markdown-preview .katex-display { max-width: 100%; overflow-x: auto; overflow-y: hidden; }
+.markdown-preview pre { max-width: 100%; overflow-x: auto; }
 .markdown-preview h1, .markdown-preview h2, .markdown-preview h3 { line-height: 1; margin: 1.4em 0 .5em; }
 .markdown-preview img { height: auto; max-width: 100%; }
 .markdown-preview a { color: var(--cobalt); }

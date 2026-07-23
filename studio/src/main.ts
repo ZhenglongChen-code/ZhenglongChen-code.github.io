@@ -1,3 +1,4 @@
+import 'katex/dist/katex.min.css';
 import './studio.css';
 
 type article_metadata = {
