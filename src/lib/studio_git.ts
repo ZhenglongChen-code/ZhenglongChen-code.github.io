@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { execFile as exec_file } from 'node:child_process';
 import { constants as fs_constants } from 'node:fs';
-import { access, lstat, mkdir, open, realpath, rename, unlink, readFile } from 'node:fs/promises';
+import { access, lstat, mkdir, open, realpath, rename, unlink, readFile, stat } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
 
@@ -38,6 +38,7 @@ const default_runner: git_command_runner = async (file, args, cwd) => {
 };
 const sha256 = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex');
 const is_inside = (root: string, value: string): boolean => { const value_relative = relative(root, value); return value_relative !== '' && !value_relative.startsWith('..') && !isAbsolute(value_relative); };
+type directory_identity = { path: string; dev: number; ino: number };
 
 /** Publishes one verified Markdown article without changing unrelated Git state. */
 export class local_git_adapter implements git_adapter {
@@ -62,9 +63,13 @@ export class local_git_adapter implements git_adapter {
     const snapshot = { ...input, source, commit_message: `${input.commit_message}`, slug: `${input.slug}`, expected_source_hash: input.expected_source_hash === undefined ? undefined : `${input.expected_source_hash}` };
     let canonical_root: string;
     try { canonical_root = await realpath(this.repository_root); } catch { return { ok: false, code: 'git_failed', message: 'Git publication failed; inspect the local repository state and retry.' }; }
-    const previous = local_git_adapter.repository_queues.get(canonical_root) ?? Promise.resolve();
+    let queue_key = canonical_root;
+    try { queue_key = await realpath(resolve(canonical_root, await this.run_git('rev-parse', '--git-common-dir'))); } catch { /* publish_locked reports the Git failure */ }
+    const previous = local_git_adapter.repository_queues.get(queue_key) ?? Promise.resolve();
     const queued = previous.then(() => this.publish_locked(snapshot, canonical_root));
-    local_git_adapter.repository_queues.set(canonical_root, queued.then(() => undefined, () => undefined));
+    const tail = queued.then(() => undefined, () => undefined);
+    local_git_adapter.repository_queues.set(queue_key, tail);
+    void tail.finally(() => { if (local_git_adapter.repository_queues.get(queue_key) === tail) local_git_adapter.repository_queues.delete(queue_key); });
     return queued;
   }
 
@@ -93,6 +98,9 @@ export class local_git_adapter implements git_adapter {
       const writing_root = resolve(configured_root, this.writing_directory);
       const writing_real = await realpath(writing_root);
       if (!is_inside(configured_root, writing_root) || writing_real !== writing_root) return { ok: false, code: 'unsafe_path', message: 'Writing directory is unsafe.' };
+      const writing_stat = await stat(writing_real);
+      if (!writing_stat.isDirectory()) return { ok: false, code: 'unsafe_path', message: 'Writing directory is unsafe.' };
+      const writing_identity = { path: writing_real, dev: writing_stat.dev, ino: writing_stat.ino };
       const relative_path = `${this.writing_directory}/${input.slug}.md`;
       const target = resolve(configured_root, relative_path);
       if (!is_inside(writing_real, target) || basename(target) !== `${input.slug}.md`) return { ok: false, code: 'unsafe_path', message: 'Article path is unsafe.' };
@@ -107,7 +115,7 @@ export class local_git_adapter implements git_adapter {
         if (sha256(current) !== input.expected_source_hash) return { ok: false, code: 'stale_source', message: 'Target article changed since it was read.' };
       }
       const old_head = await this.run_git('rev-parse', 'HEAD');
-      await this.atomic_write(target, input.source);
+      await this.atomic_write(target, input.source, writing_identity, target_stat?.mode);
       await this.run_git('add', '--', relative_path);
       await this.run_git('commit', '--only', '-m', input.commit_message, '--', relative_path);
       const commit_sha = await this.run_git('rev-parse', 'HEAD');
@@ -150,11 +158,17 @@ export class local_git_adapter implements git_adapter {
     return left.length === right.length && left.every((value, index) => value === right[index]);
   }
 
-  private async atomic_write(target: string, source: Uint8Array): Promise<void> {
-    await mkdir(dirname(target), { recursive: true });
+  private async atomic_write(target: string, source: Uint8Array, identity: directory_identity, existing_mode: number | undefined): Promise<void> {
+    const current_real = await realpath(identity.path); const current_stat = await lstat(identity.path);
+    if (current_real !== identity.path || current_stat.isSymbolicLink() || current_stat.dev !== identity.dev || current_stat.ino !== identity.ino) throw new Error('Writing directory changed.');
     const temporary = join(dirname(target), `.${basename(target)}.${process.pid}.${Date.now()}.tmp`);
-    const handle = await open(temporary, 'wx', 0o600);
-    try { await handle.writeFile(source); await handle.sync(); } finally { await handle.close(); }
-    try { await rename(temporary, target); } catch (error) { await unlink(temporary).catch(() => undefined); throw error; }
+    let handle: Awaited<ReturnType<typeof open>> | undefined;
+    try {
+      handle = await open(temporary, 'wx', existing_mode === undefined ? 0o644 : existing_mode & 0o777);
+      await handle.writeFile(source); await handle.sync(); await handle.close(); handle = undefined;
+      const final_stat = await lstat(identity.path); if (final_stat.isSymbolicLink() || final_stat.dev !== identity.dev || final_stat.ino !== identity.ino) throw new Error('Writing directory changed.');
+      await rename(temporary, target);
+      const parent_handle = await open(identity.path, 'r'); try { await parent_handle.sync(); } finally { await parent_handle.close(); }
+    } finally { if (handle) await handle.close().catch(() => undefined); await unlink(temporary).catch(() => undefined); }
   }
 }

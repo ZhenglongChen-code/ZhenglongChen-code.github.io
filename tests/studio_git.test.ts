@@ -33,6 +33,11 @@ const make_repository = async (): Promise<{ root: string; remote: string; adapte
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
 
 describe('local_git_adapter', () => {
+  it('rejects unknown operations before mutating repository state', async () => {
+    const { root, adapter } = await make_repository(); const before = await git(root, 'rev-parse', 'HEAD');
+    await expect(adapter.publish({ operation: 'unknown' as unknown as 'publish_new', slug: 'bad', source: new Uint8Array([1]), commit_message: 'Bad operation' })).resolves.toMatchObject({ ok: false, code: 'validation' });
+    expect(await git(root, 'rev-parse', 'HEAD')).toBe(before); expect(await git(root, 'status', '--porcelain')).toBe('');
+  });
   it('publishes a new article, commits exactly that path, and pushes it', async () => {
     const { root, adapter } = await make_repository();
     const source = new TextEncoder().encode('title: New\r\n\r\nbody\r\n');
