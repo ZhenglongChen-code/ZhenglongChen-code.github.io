@@ -79,7 +79,8 @@ export class local_git_adapter implements git_adapter {
       const configured_root = canonical_root;
       const git_root = await realpath(await this.run_git('rev-parse', '--show-toplevel'));
       if (configured_root !== git_root) return { ok: false, code: 'unsafe_path', message: 'Configured repository root does not match Git root.' };
-      await this.run_git('check-ref-format', '--branch', this.publication_branch);
+      try { await this.run_git('check-ref-format', '--branch', this.publication_branch); }
+      catch { return { ok: false, code: 'validation', message: 'Invalid publication branch configuration.' }; }
       const branch = await this.run_git('symbolic-ref', '--quiet', '--short', 'HEAD').catch(() => '');
       if (branch !== this.publication_branch) return { ok: false, code: 'wrong_branch', message: 'Repository is not on the configured publication branch.' };
       for (const marker of ['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'BISECT_LOG', 'rebase-apply', 'rebase-merge']) {

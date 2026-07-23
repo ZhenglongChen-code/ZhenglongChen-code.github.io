@@ -119,7 +119,7 @@ describe('local_git_adapter', () => {
       await expect(adapter.publish({ operation: 'publish_new', slug: `marker-${marker.toLowerCase().replaceAll('_', '-')}`, source: new Uint8Array([1]), commit_message: 'Publish marker' })).resolves.toMatchObject({ ok: false, code: 'repository_busy' });
       await rm(join(root, marker_path), { recursive: true, force: true });
     }
-    const invalid_configurations: ReadonlyArray<readonly [string, string]> = [['foo//bar', 'origin'], ['main', 'origin.lock'], ['-main', 'origin']];
+    const invalid_configurations: ReadonlyArray<readonly [string, string]> = [['foo//bar', 'origin'], ['foo/', 'origin'], ['foo.', 'origin'], ['foo/.bar', 'origin'], ['foo.lock', 'origin'], ['main', 'origin.lock'], ['-main', 'origin']];
     for (const [publication_branch, remote_name] of invalid_configurations) {
       const adapter = new local_git_adapter({ repository_root: root, publication_branch, remote_name, writing_directory: 'src/content/writing' });
       await expect(adapter.publish({ operation: 'publish_new', slug: 'invalid-config', source: new Uint8Array([1]), commit_message: 'Publish config' })).resolves.toMatchObject({ ok: false, code: 'validation' });
