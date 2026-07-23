@@ -269,6 +269,7 @@ describe('local Markdown Studio server', () => {
     expect(response.status).toBe(200);
     expect(response.headers.get('cache-control')).toBe('no-store');
     expect(response.headers.get('content-security-policy')).toContain("frame-ancestors 'none'");
+    expect(response.headers.get('content-security-policy')).toContain("font-src 'self' data:");
     expect(response.headers.get('x-frame-options')).toBe('DENY');
     await expect(request(base_url, '/../../package.json')).resolves.toMatchObject({ status: 404 });
   });

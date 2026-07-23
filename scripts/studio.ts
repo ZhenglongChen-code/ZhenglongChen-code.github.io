@@ -16,7 +16,7 @@ const default_request_max_bytes = 25_000_000;
 const default_image_max_bytes = 20_000_000;
 const studio_port = 4317;
 const loopback_host = '127.0.0.1';
-const studio_content_security_policy = "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'";
+const studio_content_security_policy = "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; font-src 'self' data:; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'";
 const preview_metadata_defaults: studio_article_metadata = {
   title: '',
   description: '',
