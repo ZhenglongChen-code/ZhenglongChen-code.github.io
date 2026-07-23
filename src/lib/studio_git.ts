@@ -57,6 +57,7 @@ export class local_git_adapter implements git_adapter {
   }
 
   async publish(input: git_publish_input): Promise<git_publish_result> {
+    if (input.operation !== 'publish_new' && input.operation !== 'publish_update') return { ok: false, code: 'validation', message: 'Invalid publication operation.' };
     const source = new Uint8Array(input.source);
     const snapshot = { ...input, source, commit_message: `${input.commit_message}`, slug: `${input.slug}`, expected_source_hash: input.expected_source_hash === undefined ? undefined : `${input.expected_source_hash}` };
     let canonical_root: string;
@@ -117,7 +118,13 @@ export class local_git_adapter implements git_adapter {
           return { ok: false, code: 'integrity_failed', message: 'Committed article integrity verification failed; the unpublished branch ref was restored.' };
         } catch { return { ok: false, code: 'critical_recovery_failed', message: 'Committed article integrity failed; do not push. Manually inspect and restore the publication branch ref.' }; }
       }
-      try { await this.run_git('push', this.remote_name, this.publication_branch); return { ok: true, path: relative_path, commit_sha, push_status: 'pushed' }; }
+      try {
+        const remote_ref = `refs/heads/${this.publication_branch}`;
+        await this.run_git('push', this.remote_name, `${commit_sha}:${remote_ref}`);
+        const remote_sha = (await this.run_git('ls-remote', this.remote_name, remote_ref)).split(/\s+/)[0];
+        if (remote_sha !== commit_sha) return { ok: false, code: 'push_failed', message: 'Remote did not confirm the verified article commit.', commit_sha, committed_paths: [relative_path], recovery: 'Inspect the remote branch before retrying; do not force-push.' };
+        return { ok: true, path: relative_path, commit_sha, push_status: 'pushed' };
+      }
       catch { return { ok: false, code: 'push_failed', message: 'Push failed after the local article commit was created.', commit_sha, committed_paths: [relative_path], recovery: 'Local commit was kept. Fetch the remote branch, resolve divergence, then push normally without force.' }; }
     } catch { return { ok: false, code: 'git_failed', message: 'Git publication failed; inspect the local repository state and retry.' }; }
   }
