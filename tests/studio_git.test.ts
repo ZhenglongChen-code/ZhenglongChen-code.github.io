@@ -33,6 +33,23 @@ const make_repository = async (): Promise<{ root: string; remote: string; adapte
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
 
 describe('local_git_adapter', () => {
+  it('inspects durable Git transaction states from target bytes and remote branch confirmation', async () => {
+    const { adapter } = await make_repository(); const target_path = 'src/content/writing/recover.md'; const source = new TextEncoder().encode('recovered\n');
+    await expect(adapter.inspect_studio_transaction({ target_path, target_sha256: sha256(source), phase: 'git_pending' })).resolves.toEqual({ state: 'not_committed' });
+    const published = await adapter.publish({ operation: 'publish_new', slug: 'recover', source, commit_message: 'Recover transaction' });
+    expect(published).toMatchObject({ ok: true });
+    await expect(adapter.inspect_studio_transaction({ target_path, target_sha256: sha256(source), phase: 'ambiguous' })).resolves.toMatchObject({ state: 'pushed', commit_sha: expect.stringMatching(/^[a-f0-9]{40}$/) });
+    await expect(adapter.inspect_studio_transaction({ target_path, target_sha256: '0'.repeat(64), phase: 'git_pending' })).resolves.toEqual({ state: 'not_committed' });
+  });
+
+  it('reports a verified local-only transaction when remote confirmation is unavailable', async () => {
+    const { root } = await make_repository();
+    const runner: git_command_runner = async (file, args, cwd) => { if (args[0] === 'push') throw new Error('offline'); const output = await exec_file_async(file, [...args], { cwd }); return { stdout: output.stdout, stderr: output.stderr }; };
+    const adapter = new local_git_adapter({ repository_root: root, publication_branch: 'main', remote_name: 'origin', writing_directory: 'src/content/writing', command_runner: runner }); const source = new TextEncoder().encode('local only\n');
+    await expect(adapter.publish({ operation: 'publish_new', slug: 'local-only', source, commit_message: 'Local only' })).resolves.toMatchObject({ ok: false, code: 'push_failed', commit_retained: true });
+    await expect(adapter.inspect_studio_transaction({ target_path: 'src/content/writing/local-only.md', target_sha256: sha256(source), phase: 'git_pending' })).resolves.toMatchObject({ state: 'committed_local', commit_sha: expect.stringMatching(/^[a-f0-9]{40}$/) });
+  });
+
   it('preserves article modes despite restrictive umask', async () => {
     const { root, adapter } = await make_repository(); const original_umask = process.umask(0o077);
     try {

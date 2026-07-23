@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { validate_studio_request } from '../src/lib/studio_protocol';
-import { cleanup_studio_transaction, publish_article, recover_stale_studio_claim } from '../src/lib/studio_publish';
+import { cleanup_studio_transaction, publish_article, reconcile_studio_git_transaction, recover_stale_studio_claim } from '../src/lib/studio_publish';
 
 describe('studio protocol', () => {
   it('rejects unsafe request ids before publication work', () => {
@@ -88,6 +88,16 @@ describe('studio publication', () => {
     const deleted: Array<readonly [string, string]> = []; const result = await publish_article(request, { ...publication_dependencies(await journal_root(), { verify_versioning: async () => undefined, inspect_object: async () => undefined, upload_object: async () => ({ version_id: 'created-v1' }), delete_object: async (object_key, version_id) => { deleted.push([object_key, version_id]); } }), git: { publish: async () => ({ ok: false as const, code: 'stale_source' as const, message: 'source changed' }) } });
     expect(result).toMatchObject({ kind: 'failed', errors: [{ code: 'stale_source' }], cleanup: { deleted: [prepared.object_key], failures: [] } }); expect(deleted).toEqual([[prepared.object_key, 'created-v1']]);
   });
+  it('retries pre-commit cleanup with only exact versions that failed previously', async () => {
+    const root = await journal_root(); const transactions = join(root, '.studio/transactions'); await mkdir(transactions, { recursive: true });
+    const second_key = 'site/articles/2026/post/fig-02-second.png';
+    await writeFile(join(transactions, `${request.request_id}.json`), JSON.stringify({ protocol_version: 1, request_id: request.request_id, payload_hash: request_hash(), status: 'in_progress', phase: 'pre_commit', target_path: 'src/content/writing/post.md', owned: [{ object_key: prepared.object_key, version_id: 'v1', sha256: prepared.sha256 }, { object_key: second_key, version_id: 'v2', sha256: prepared.sha256 }] }));
+    const delete_calls: string[] = []; let fail_second = true; const adapter = { verify_versioning: async () => undefined, inspect_object: async () => undefined, upload_object: async () => ({ version_id: 'unused' }), delete_object: async (object_key: string) => { delete_calls.push(object_key); if (object_key === second_key && fail_second) throw new Error('transient'); } };
+    await expect(cleanup_studio_transaction(root, request.request_id, adapter)).resolves.toMatchObject({ kind: 'failed', cleanup: { deleted: [prepared.object_key], failures: [second_key] } });
+    fail_second = false;
+    await expect(cleanup_studio_transaction(root, request.request_id, adapter)).resolves.toMatchObject({ kind: 'failed', cleanup: { deleted: [second_key], failures: [] } });
+    expect(delete_calls).toEqual([prepared.object_key, second_key, second_key]);
+  });
   it('reports deployment failure as advisory after a pushed publication', async () => {
     const result = await publish_article(request, { ...publication_dependencies(await journal_root(), { verify_versioning: async () => undefined, inspect_object: async () => undefined, upload_object: async () => ({ version_id: 'v1' }), delete_object: async () => undefined }), deployment: { report: async () => { throw new Error('offline'); } } });
     expect(result).toMatchObject({ kind: 'published', deployment_advisory: 'Deployment status could not be confirmed.' });
@@ -96,6 +106,19 @@ describe('studio publication', () => {
     let deletes = 0; const root = await journal_root(); const result = await publish_article(request, { ...publication_dependencies(root, { verify_versioning: async () => undefined, inspect_object: async () => undefined, upload_object: async () => ({ version_id: 'v1' }), delete_object: async () => { deletes += 1; } }), git: { publish: async () => { throw new Error('lost Git response'); } } });
     expect(result).toMatchObject({ kind: 'recovery_required', errors: [{ code: 'git_ambiguous' }] }); expect(deletes).toBe(0);
     await expect(cleanup_studio_transaction(root, request.request_id, { verify_versioning: async () => undefined, inspect_object: async () => undefined, upload_object: async () => ({ version_id: 'unused' }), delete_object: async () => { deletes += 1; } })).resolves.toMatchObject({ kind: 'recovery_required' }); expect(deletes).toBe(0);
+  });
+  it('reconciles definite Git states without deleting assets and returns a no-commit state to pre_commit', async () => {
+    const root = await journal_root(); const transactions = join(root, '.studio/transactions'); await mkdir(transactions, { recursive: true }); const target_sha256 = 'e'.repeat(64);
+    const write_git_journal = async (request_id: string, phase: 'git_pending' | 'ambiguous'): Promise<void> => writeFile(join(transactions, `${request_id}.json`), JSON.stringify({ protocol_version: 1, request_id, payload_hash: 'b'.repeat(64), status: phase === 'ambiguous' ? 'recovery_required' : 'in_progress', phase, target_path: 'src/content/writing/post.md', target_sha256, owned: [{ object_key: prepared.object_key, version_id: 'v1', sha256: prepared.sha256 }] }));
+    const no_commit_id = '6'.repeat(32); await write_git_journal(no_commit_id, 'git_pending');
+    await expect(reconcile_studio_git_transaction(root, no_commit_id, { inspect: async () => ({ state: 'not_committed' }) })).resolves.toMatchObject({ kind: 'recovery_required' });
+    let deletes = 0; await expect(cleanup_studio_transaction(root, no_commit_id, { verify_versioning: async () => undefined, inspect_object: async () => undefined, upload_object: async () => ({ version_id: 'unused' }), delete_object: async () => { deletes += 1; } })).resolves.toMatchObject({ kind: 'failed' }); expect(deletes).toBe(1);
+    const local_id = '7'.repeat(32); await write_git_journal(local_id, 'ambiguous');
+    await expect(reconcile_studio_git_transaction(root, local_id, { inspect: async () => ({ state: 'committed_local', commit_sha: 'c'.repeat(40) }) })).resolves.toMatchObject({ kind: 'committed_local', commit_sha: 'c'.repeat(40) });
+    const pushed_id = '8'.repeat(32); await write_git_journal(pushed_id, 'ambiguous');
+    await expect(reconcile_studio_git_transaction(root, pushed_id, { inspect: async () => ({ state: 'pushed', commit_sha: 'd'.repeat(40) }), public_site_url: 'https://site.example' })).resolves.toMatchObject({ kind: 'published', commit_sha: 'd'.repeat(40) });
+    const unknown_id = '9'.repeat(32); await write_git_journal(unknown_id, 'git_pending');
+    await expect(reconcile_studio_git_transaction(root, unknown_id, { git: { inspect_studio_transaction: async () => ({ state: 'unknown' }) } })).resolves.toMatchObject({ kind: 'recovery_required' });
   });
   it('does not delete a foreign active lock and reports its payload conflict', async () => {
     const root = await journal_root(); const transactions = join(root, '.studio/transactions'); await mkdir(transactions, { recursive: true }); const lock = join(transactions, `${request.request_id}.json.lock`);

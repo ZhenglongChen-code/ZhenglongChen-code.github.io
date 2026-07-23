@@ -27,8 +27,10 @@ export type git_publish_failure = { ok: false; code: Exclude<git_publish_failure
 export type git_push_failed = { ok: false; code: 'push_failed'; message: string; commit_retained: true; commit_sha: string; committed_paths: string[]; recovery: string };
 export type git_publish_success = { ok: true; path: string; commit_retained?: true; commit_sha: string; push_status: 'pushed' };
 export type git_publish_result = git_publish_failure | git_push_failed | git_publish_success;
+export type git_transaction_inspection_input = { target_path: string; target_sha256: string; phase: 'git_pending' | 'ambiguous' };
+export type git_transaction_inspection = { state: 'not_committed' } | { state: 'committed_local'; commit_sha: string } | { state: 'pushed'; commit_sha: string } | { state: 'unknown' };
 
-export interface git_adapter { publish(input: git_publish_input): Promise<git_publish_result>; }
+export interface git_adapter { publish(input: git_publish_input): Promise<git_publish_result>; inspect_studio_transaction?(input: git_transaction_inspection_input): Promise<git_transaction_inspection>; }
 export type git_command_runner = (file: string, args: readonly string[], cwd: string) => Promise<{ stdout: string; stderr: string }>;
 export type local_git_adapter_options = { repository_root: string; publication_branch: string; remote_name: string; writing_directory: string; command_runner?: git_command_runner };
 
@@ -71,6 +73,25 @@ export class local_git_adapter implements git_adapter {
     local_git_adapter.repository_queues.set(queue_key, tail);
     void tail.finally(() => { if (local_git_adapter.repository_queues.get(queue_key) === tail) local_git_adapter.repository_queues.delete(queue_key); });
     return queued;
+  }
+
+  /** Inspects only local and remote Git state for a journaled transaction; it never mutates either repository. */
+  async inspect_studio_transaction(input: git_transaction_inspection_input): Promise<git_transaction_inspection> {
+    if ((input.phase !== 'git_pending' && input.phase !== 'ambiguous') || !/^[a-f0-9]{64}$/.test(input.target_sha256) || !this.safe_transaction_target(input.target_path)) return { state: 'unknown' };
+    try {
+      const canonical_root = await realpath(this.repository_root);
+      const git_root = await realpath(await this.run_git('rev-parse', '--show-toplevel'));
+      if (canonical_root !== git_root) return { state: 'unknown' };
+      const branch = await this.run_git('symbolic-ref', '--quiet', '--short', 'HEAD').catch(() => '');
+      if (branch !== this.publication_branch || !safe_branch_token(this.publication_branch) || !safe_remote_token(this.remote_name)) return { state: 'unknown' };
+      if (await this.path_dirty(input.target_path)) return { state: 'unknown' };
+      const commit_sha = await this.run_git('log', '-1', '--format=%H', '--', input.target_path).catch(() => '');
+      if (!/^[a-f0-9]{40}$/.test(commit_sha)) return { state: 'not_committed' };
+      const committed = await this.committed_bytes(commit_sha, input.target_path).catch(() => undefined);
+      if (!committed || sha256(committed) !== input.target_sha256) return { state: 'not_committed' };
+      const remote_sha = (await this.run_git('ls-remote', this.remote_name, `refs/heads/${this.publication_branch}`).catch(() => '')).split(/\s+/)[0];
+      return remote_sha === commit_sha ? { state: 'pushed', commit_sha } : { state: 'committed_local', commit_sha };
+    } catch { return { state: 'unknown' }; }
   }
 
   private async run_git(...args: string[]): Promise<string> {
@@ -145,6 +166,14 @@ export class local_git_adapter implements git_adapter {
       await this.run_git('diff', '--cached', '--quiet', '--', relative_path);
       return false;
     } catch { return true; }
+  }
+
+  /** Confines a journal target to this adapter's configured writing directory and one Markdown file. */
+  private safe_transaction_target(target_path: string): boolean {
+    const expected_prefix = `${this.writing_directory}/`;
+    if (!writing_directory_pattern.test(this.writing_directory) || !target_path.startsWith(expected_prefix) || !target_path.endsWith('.md') || target_path.includes('\\') || target_path.includes('..') || target_path.slice(expected_prefix.length, -3).includes('/')) return false;
+    const target = resolve(this.repository_root, target_path);
+    return is_inside(resolve(this.repository_root, this.writing_directory), target);
   }
 
   private async exists(path: string): Promise<boolean> { try { await access(path, fs_constants.F_OK); return true; } catch { return false; } }
