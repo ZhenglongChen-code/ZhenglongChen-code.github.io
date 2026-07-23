@@ -236,6 +236,16 @@ describe('studio_images', () => {
     expect(calls).toEqual([expect.objectContaining({ Headers: expect.objectContaining({ 'If-None-Match': '*', 'x-cos-meta-sha256': image.sha256, 'x-cos-meta-studio-request-id': request_id }) })]);
   });
 
+  it('replaces an authorized version only with the inspected ETag and returns its new version token', async () => {
+    const image = (await prepare_article_images([{ source_path: 'x.png', bytes: await png_bytes(), claimed_content_type: 'image/png', intent: 'diagram', semantic_name: 'map' }], { root_prefix: 'latent-field', public_base_url: 'https://cdn.example.com', year: 2026, slug: 'vlm-evaluation', max_bytes: 1_000_000, max_pixels: 1_000_000, max_width: 100, max_height: 100 })).images[0]!;
+    const calls: unknown[] = [];
+    const client = { getBucketVersioning: async () => ({ VersioningConfiguration: { Status: 'Enabled' as const } }), headObject: async () => ({ ETag: '"old-etag"', headers: { 'x-cos-meta-sha256': image.sha256, 'x-cos-version-id': 'old-version' } }), putObject: async (input: unknown) => { calls.push(input); return { VersionId: 'replacement-version' }; }, deleteObject: async () => ({}) };
+    const adapter = new tencent_cos_adapter({ secret_id: 'id', secret_key: 'key', region: 'ap-shanghai', bucket: 'bucket-1234567890', root_prefix: 'latent-field', public_base_url: 'https://cdn.example.com' }, () => client);
+    await expect(adapter.inspect_object(image.object_key)).resolves.toMatchObject({ etag: '"old-etag"', version_id: 'old-version' });
+    await expect(adapter.replace_object(image, '"old-etag"', 'a'.repeat(32))).resolves.toEqual({ version_id: 'replacement-version' });
+    expect(calls).toEqual([expect.objectContaining({ Headers: expect.objectContaining({ 'If-Match': '"old-etag"', 'x-cos-meta-sha256': image.sha256, 'x-cos-meta-studio-request-id': 'a'.repeat(32) }) })]);
+  });
+
   it('preserves the version-owned success ledger when a later upload has a network failure', async () => {
     const images = (await prepare_article_images([
       { source_path: 'a.png', bytes: await png_bytes(), claimed_content_type: 'image/png', intent: 'diagram', semantic_name: 'a' },

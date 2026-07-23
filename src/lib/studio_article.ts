@@ -170,6 +170,12 @@ export const parse_studio_article = (source: string, slug: string): studio_artic
   };
 };
 
+/** Validates source YAML first, then overlays the independently validated Studio form metadata. */
+export const normalize_studio_article = (source: string, slug: string, metadata: Record<string, unknown>): studio_article => {
+  const imported = parse_studio_article_source(source);
+  return parse_studio_article(matter.stringify(imported.body, { ...imported.metadata, ...metadata }), slug);
+};
+
 /** Serializes Studio metadata and Markdown body into an editable Markdown document. */
 export const serialize_studio_article = (article: studio_article): string => {
   const { metadata } = article;

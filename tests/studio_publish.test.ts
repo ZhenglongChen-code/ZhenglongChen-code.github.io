@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
 import { execFile as exec_file } from 'node:child_process';
-import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -29,7 +29,7 @@ describe('studio publication', () => {
   const captured_baseline = { pre_git_head: 'a'.repeat(40), baseline_sha: 'a'.repeat(40) };
   /** Makes test doubles explicitly provide the durable baseline required by every Studio Git publication. */
   const with_baseline = <T extends object>(adapter: T): T & { capture_baseline: () => Promise<typeof captured_baseline> } => ({ capture_baseline: async () => captured_baseline, ...adapter });
-  const publication_dependencies = (root: string, cos: { verify_versioning: () => Promise<void>; inspect_object: (object_key: string) => Promise<{ sha256: string; version_id?: string; studio_request_id?: string } | undefined>; upload_object: (image: typeof prepared, studio_request_id: string) => Promise<{ version_id: string }>; delete_object: (object_key: string, version_id: string) => Promise<void> }, git?: { capture_baseline: () => Promise<typeof captured_baseline>; publish: () => Promise<{ ok: true; path: string; commit_sha: string; push_status: 'pushed' }> }) => ({ journal_root: root, public_site_url: 'https://site.example', image_options: { root_prefix: 'site', public_base_url: 'https://assets.example', max_bytes: 10, max_pixels: 10, max_width: 10, max_height: 10 }, cos, prepare_images: async () => [prepared], git: git ?? with_baseline({ publish: async () => ({ ok: true as const, path: 'src/content/writing/post.md', commit_sha: 'c'.repeat(40), push_status: 'pushed' as const }) }) });
+  const publication_dependencies = (root: string, cos: { verify_versioning: () => Promise<void>; inspect_object: (object_key: string) => Promise<{ sha256: string; version_id?: string; studio_request_id?: string; etag?: string } | undefined>; upload_object: (image: typeof prepared, studio_request_id: string) => Promise<{ version_id: string }>; replace_object?: (image: typeof prepared, expected_etag: string, studio_request_id?: string) => Promise<{ version_id: string }>; delete_object: (object_key: string, version_id: string) => Promise<void> }, git?: { capture_baseline: () => Promise<typeof captured_baseline>; publish: () => Promise<{ ok: true; path: string; commit_sha: string; push_status: 'pushed' }> }) => ({ journal_root: root, public_site_url: 'https://site.example', image_options: { root_prefix: 'site', public_base_url: 'https://assets.example', max_bytes: 10, max_pixels: 10, max_width: 10, max_height: 10 }, cos, prepare_images: async () => [prepared], git: git ?? with_baseline({ publish: async () => ({ ok: true as const, path: 'src/content/writing/post.md', commit_sha: 'c'.repeat(40), push_status: 'pushed' as const }) }) });
   const request_hash = (input = request): string => createHash('sha256').update(JSON.stringify({ protocol_version: 1, request_id: input.request_id, slug: input.slug, year: input.year, markdown: input.markdown, metadata: input.metadata, images: [{ source_path: 'figure.png', bytes: prepared.sha256, claimed_content_type: 'image/png', intent: 'diagram', semantic_name: 'figure' }], kind: input.kind, commit_message: input.commit_message })).digest('hex');
 
   /** Creates a real repository and remote used to exercise post-write Git failures. */
@@ -85,6 +85,36 @@ describe('studio publication', () => {
     const result = await publish_article(request, { ...publication_dependencies(await journal_root(), { verify_versioning: async () => undefined, inspect_object: async () => undefined, upload_object: async () => ({ version_id: 'v1' }), delete_object: async () => undefined }), git: with_baseline({ publish: async (input: git_publish_input) => { git_calls += 1; expect(new TextDecoder().decode(input.source)).toContain('https://assets.example/'); return { ok: true as const, path: 'src/content/writing/post.md', commit_sha: 'c'.repeat(40), push_status: 'pushed' as const }; } }) });
     expect(result).toMatchObject({ kind: 'published', public_url: 'https://site.example/articles/post/' });
     expect(git_calls).toBe(1);
+  });
+  it('normalizes body-only and partial-frontmatter publications from the form metadata', async () => {
+    for (const markdown of ['A body without frontmatter.\n', '---\ntitle: Imported title\n---\n\nA body with partial frontmatter.\n']) {
+      let source = '';
+      const result = await publish_article({ ...request, markdown, images: undefined }, {
+        ...publication_dependencies(await journal_root(), { verify_versioning: async () => undefined, inspect_object: async () => undefined, upload_object: async () => ({ version_id: 'unused' }), delete_object: async () => undefined }),
+        prepare_images: async () => [],
+        git: with_baseline({ publish: async (input: git_publish_input) => { source = new TextDecoder().decode(input.source); return { ok: true as const, path: 'src/content/writing/post.md', commit_sha: 'c'.repeat(40), push_status: 'pushed' as const }; } }),
+      });
+      expect(result).toMatchObject({ kind: 'published' });
+      expect(source).toContain('title: Post');
+      expect(source).toContain('description: Description');
+      expect(source).toContain("date: '2026-01-02'");
+    }
+  });
+  it('uses the English article route after normalizing form metadata', async () => {
+    const result = await publish_article({ ...request, markdown: '---\ntitle: Post\ndescription: Description\ndate: 2026-01-02\n---\n\nEnglish body.\n', metadata: { ...request.metadata, language: 'en' }, images: undefined }, {
+      ...publication_dependencies(await journal_root(), { verify_versioning: async () => undefined, inspect_object: async () => undefined, upload_object: async () => ({ version_id: 'unused' }), delete_object: async () => undefined }),
+      prepare_images: async () => [],
+    });
+    expect(result).toMatchObject({ kind: 'published', public_url: 'https://site.example/en/articles/post/' });
+  });
+  it('rejects a publication year that differs from normalized metadata before COS work', async () => {
+    let cos_calls = 0;
+    const result = await publish_article({ ...request, year: 2025, markdown: '---\ntitle: Post\ndescription: Description\ndate: 2026-01-02\n---\n\nBody.\n', images: undefined }, {
+      ...publication_dependencies(await journal_root(), { verify_versioning: async () => { cos_calls += 1; }, inspect_object: async () => { cos_calls += 1; return undefined; }, upload_object: async () => { cos_calls += 1; return { version_id: 'unused' }; }, delete_object: async () => { cos_calls += 1; } }),
+      prepare_images: async () => [],
+    });
+    expect(result).toMatchObject({ kind: 'failed', errors: [{ code: 'year_date_mismatch', field: 'year' }] });
+    expect(cos_calls).toBe(0);
   });
   it('reports an unconfigured publisher without calling side-effect adapters', async () => {
     const result = await publish_article(request, { journal_root: await journal_root() });
@@ -160,6 +190,57 @@ describe('studio publication', () => {
     expect(source).toContain("public_url: 'https://assets.example/site/articles/2026/post/fig-01-figure-v2.png'");
     expect(source).toContain('source_path: retained.png');
     expect((source.match(/source_path: figure\.png/g) ?? [])).toHaveLength(1);
+  });
+  it('replaces a changed deterministic asset only for an explicitly imported update manifest', async () => {
+    const old_sha256 = createHash('sha256').update(new Uint8Array([9])).digest('hex');
+    const updated = {
+      ...request,
+      kind: 'publish_update' as const,
+      request_id: '33333333333333333333333333333333',
+      expected_source_hash: 'a'.repeat(64),
+      markdown: `---\ntitle: Post\ndescription: Description\ndate: 2026-01-02\nassets:\n  - source_path: figure.png\n    object_key: ${prepared.object_key}\n    public_url: ${prepared.public_url}\n---\n\n![a](figure.png)`,
+    metadata: { ...request.metadata },
+    images: request.images,
+    commit_message: 'Update post',
+    year: 2026,
+  };
+    const replacement = { ...prepared, bytes: new Uint8Array([2]), sha256: createHash('sha256').update(new Uint8Array([2])).digest('hex') };
+    let replacements = 0;
+    const result = await publish_article(updated, {
+      ...publication_dependencies(await journal_root(), {
+        verify_versioning: async () => undefined,
+        inspect_object: async () => ({ sha256: old_sha256, version_id: 'old-version', etag: 'old-etag' }),
+        upload_object: async () => ({ version_id: 'unexpected-create' }),
+        replace_object: async (image, expected_etag, studio_request_id) => {
+          replacements += 1;
+          expect(image.object_key).toBe(prepared.object_key);
+          expect(expected_etag).toBe('old-etag');
+          expect(studio_request_id).toBe(updated.request_id);
+          return { version_id: 'replacement-version' };
+        },
+        delete_object: async () => undefined,
+      }),
+      prepare_images: async () => [replacement],
+    });
+    expect(result).toMatchObject({ kind: 'published' });
+    expect(replacements).toBe(1);
+  });
+  it('rejects a symlinked Studio journal directory before publication or recovery touch it', async () => {
+    const root = await journal_root();
+    const escaped_root = await mkdtemp(join(tmpdir(), 'studio-escaped-')); roots.push(escaped_root);
+    await symlink(escaped_root, join(root, '.studio'));
+    let effects = 0;
+    const dependencies = {
+      ...publication_dependencies(root, { verify_versioning: async () => { effects += 1; }, inspect_object: async () => { effects += 1; return undefined; }, upload_object: async () => { effects += 1; return { version_id: 'unexpected' }; }, delete_object: async () => { effects += 1; } }),
+      prepare_images: async () => [],
+      git: with_baseline({ publish: async () => { effects += 1; return { ok: true as const, path: 'src/content/writing/post.md', commit_sha: 'c'.repeat(40), push_status: 'pushed' as const }; } }),
+    };
+    await expect(publish_article({ ...request, markdown: '---\ntitle: Post\ndescription: Description\ndate: 2026-01-02\n---\n\nBody.\n', images: undefined }, dependencies)).resolves.toMatchObject({ kind: 'recovery_required', errors: [{ code: 'unsafe_journal' }] });
+    await expect(cleanup_studio_transaction(root, request.request_id, dependencies.cos)).resolves.toMatchObject({ kind: 'recovery_required', errors: [{ code: 'unsafe_journal' }] });
+    await expect(reconcile_studio_git_transaction(root, request.request_id, { inspect: async () => ({ state: 'not_committed' }) })).resolves.toMatchObject({ kind: 'recovery_required', errors: [{ code: 'unsafe_journal' }] });
+    await expect(recover_stale_studio_claim(root, request.request_id)).resolves.toMatchObject({ kind: 'recovery_required', errors: [{ code: 'unsafe_claim' }] });
+    expect(effects).toBe(0);
+    await expect(readFile(join(escaped_root, 'transactions', `${request.request_id}.json`))).rejects.toMatchObject({ code: 'ENOENT' });
   });
   it('rejects invalid metadata before any COS side effect', async () => {
     let uploads = 0; let inspections = 0; const invalid = { ...request, metadata: { ...request.metadata, title: '' } };

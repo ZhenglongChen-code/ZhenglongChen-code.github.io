@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { lstat, mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
+import { lstat, mkdir, open, readFile, realpath, rename, unlink } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
-import { parse_studio_article, serialize_studio_article, discover_local_images, type studio_asset } from './studio_article';
+import { normalize_studio_article, parse_studio_article, serialize_studio_article, discover_local_images, type studio_asset } from './studio_article';
 import { render_markdown_preview, studio_validation_error } from './markdown_preview';
 import { prepare_article_images, rewrite_markdown_images, studio_image_publish_error, type cleanup_result, type cos_adapter, type image_preparation_options, type prepared_image } from './studio_images';
 import type { git_adapter, git_publish_result, git_transaction_inspection, git_transaction_inspection_input } from './studio_git';
@@ -13,7 +13,7 @@ type transaction_status = 'in_progress' | 'completed' | 'recovery_required';
 type owned_object = { object_key: string; version_id: string; sha256: string };
 type pending_upload = { object_key: string; sha256: string };
 type studio_claim = { token: string; pid: number; created_at: string; payload_hash: string };
-type journal = { protocol_version: 1; request_id: string; payload_hash: string; status: transaction_status; phase: transaction_phase; target_path: string; target_sha256?: string; pre_git_head?: string; baseline_sha?: string; owned: owned_object[]; pending_upload?: pending_upload; commit_sha?: string; result?: studio_response };
+type journal = { protocol_version: 1; request_id: string; payload_hash: string; status: transaction_status; phase: transaction_phase; target_path: string; language?: 'zh' | 'en'; target_sha256?: string; pre_git_head?: string; baseline_sha?: string; owned: owned_object[]; pending_upload?: pending_upload; commit_sha?: string; result?: studio_response };
 type journal_event = 'before_write' | 'before_file_sync' | 'before_rename' | 'before_directory_sync';
 type process_state = 'active' | 'dead' | 'unknown';
 
@@ -47,7 +47,7 @@ const canonical_public_site_url = (value: string): string | undefined => {
 };
 
 /** Builds a validated article URL without allowing the article path to discard a configured site subpath. */
-const article_public_url = (public_site_url: string, slug: string): string => `${public_site_url}articles/${slug}/`;
+const article_public_url = (public_site_url: string, slug: string, language: 'zh' | 'en' = 'zh'): string => `${public_site_url}${language === 'en' ? 'en/articles' : 'articles'}/${slug}/`;
 
 /** Produces a failed response with an optional exact-version cleanup report. */
 const failed = (errors: studio_error[], cleanup?: cleanup_result): studio_response => ({ protocol_version: 1, kind: 'failed', errors, ...(cleanup === undefined ? {} : { cleanup }) });
@@ -79,6 +79,48 @@ const payload_hash = (request: studio_request): string => sha256(JSON.stringify(
 /** Returns the only permitted journal pathname for a validated request identifier. */
 const journal_path = (root: string, request_id: string): string => join(root, '.studio', 'transactions', `${request_id}.json`);
 
+class unsafe_journal_error extends Error {}
+
+/** Rejects symlinks and non-directories in every Studio-owned path component before journal I/O. */
+const safe_journal_path = async (journal_root: string, request_id: string, create: boolean): Promise<string | undefined> => {
+  let root = resolve(journal_root);
+  const root_stat = await lstat(root).catch(() => undefined);
+  if (!root_stat || root_stat.isSymbolicLink() || !root_stat.isDirectory()) throw new unsafe_journal_error('unsafe journal');
+  root = await realpath(root);
+  const directory = async (path: string): Promise<boolean> => {
+    let stat = await lstat(path).catch(() => undefined);
+    if (!stat && create) {
+      await mkdir(path, { mode: 0o700 }).catch((cause: unknown) => {
+        if (typeof cause !== 'object' || cause === null || !('code' in cause) || cause.code !== 'EEXIST') throw cause;
+      });
+      stat = await lstat(path).catch(() => undefined);
+    }
+    if (!stat) return false;
+    if (stat.isSymbolicLink() || !stat.isDirectory()) throw new unsafe_journal_error('unsafe journal');
+    return true;
+  };
+  const studio = join(root, '.studio');
+  if (!await directory(studio)) return undefined;
+  const transactions = join(studio, 'transactions');
+  if (!await directory(transactions)) return undefined;
+  const path = resolve(journal_path(root, request_id));
+  if (!inside(root, path)) throw new unsafe_journal_error('unsafe journal');
+  const file = await lstat(path).catch(() => undefined);
+  if (file && (file.isSymbolicLink() || !file.isFile())) throw new unsafe_journal_error('unsafe journal');
+  return path;
+};
+
+/** Rechecks the root, Studio directories, and target before each journal or claim filesystem operation. */
+const assert_safe_journal_file = async (path: string): Promise<void> => {
+  const root = dirname(dirname(dirname(path)));
+  for (const directory of [root, dirname(dirname(path)), dirname(path)]) {
+    const stat = await lstat(directory).catch(() => undefined);
+    if (!stat || stat.isSymbolicLink() || !stat.isDirectory()) throw new unsafe_journal_error('unsafe journal');
+  }
+  const file = await lstat(path).catch(() => undefined);
+  if (file && (file.isSymbolicLink() || !file.isFile())) throw new unsafe_journal_error('unsafe journal');
+};
+
 /** Returns the lock path paired with a journal path. */
 const claim_path = (path: string): string => `${path}.lock`;
 
@@ -97,6 +139,7 @@ const is_studio_claim = (value: unknown): value is studio_claim => is_record(val
 /** Checks phase-specific journal state so malformed completed records cannot trigger cleanup. */
 const is_journal = (value: unknown, expected_request_id?: string): value is journal => {
   if (!is_record(value) || value.protocol_version !== 1 || typeof value.request_id !== 'string' || !request_id_pattern.test(value.request_id) || (expected_request_id !== undefined && value.request_id !== expected_request_id) || typeof value.payload_hash !== 'string' || !sha256_pattern.test(value.payload_hash) || (value.status !== 'in_progress' && value.status !== 'completed' && value.status !== 'recovery_required') || (value.phase !== 'pre_commit' && value.phase !== 'git_pending' && value.phase !== 'ambiguous' && value.phase !== 'committed' && value.phase !== 'pushed') || typeof value.target_path !== 'string' || !target_path_pattern.test(value.target_path) || !Array.isArray(value.owned) || !value.owned.every(is_owned_object) || new Set(value.owned.map((item) => item.object_key)).size !== value.owned.length) return false;
+  if (value.language !== undefined && value.language !== 'zh' && value.language !== 'en') return false;
   if (value.pending_upload !== undefined && !is_pending_upload(value.pending_upload)) return false;
   if (value.target_sha256 !== undefined && (typeof value.target_sha256 !== 'string' || !sha256_pattern.test(value.target_sha256))) return false;
   if (value.pre_git_head !== undefined && (typeof value.pre_git_head !== 'string' || !commit_sha_pattern.test(value.pre_git_head))) return false;
@@ -115,6 +158,7 @@ const is_journal = (value: unknown, expected_request_id?: string): value is jour
 
 /** Reads and fully validates a journal before it can influence recovery decisions. */
 const read_journal = async (path: string, expected_request_id?: string): Promise<journal | undefined> => {
+  await assert_safe_journal_file(path);
   const raw = await readFile(path, 'utf8').catch((cause: unknown) => {
     if (is_record(cause) && cause.code === 'ENOENT') return undefined;
     throw cause;
@@ -129,6 +173,7 @@ const read_journal = async (path: string, expected_request_id?: string): Promise
 /** Writes a journal atomically and fsyncs both file and containing directory. */
 const write_journal = async (path: string, value: journal, runtime?: studio_publish_runtime): Promise<void> => {
   if (!is_journal(value, value.request_id)) throw new Error('invalid journal state');
+  await assert_safe_journal_file(path);
   const process_id = runtime?.process_id?.() ?? process.pid;
   const temporary = `${path}.${process_id}.${runtime?.now?.().getTime() ?? Date.now()}.${randomBytes(8).toString('hex')}.tmp`;
   let file: Awaited<ReturnType<typeof open>> | undefined;
@@ -152,6 +197,7 @@ const write_journal = async (path: string, value: journal, runtime?: studio_publ
 
 /** Reads and validates a claim without deleting or modifying it. */
 const read_claim = async (path: string): Promise<studio_claim | undefined> => {
+  await assert_safe_journal_file(path);
   const raw = await readFile(path, 'utf8').catch((cause: unknown) => {
     if (is_record(cause) && cause.code === 'ENOENT') return undefined;
     throw cause;
@@ -177,6 +223,7 @@ const acquire_claim = async (path: string, payload: string, runtime?: studio_pub
   const claim: studio_claim = { token, pid, created_at: (runtime?.now?.() ?? new Date()).toISOString(), payload_hash: payload };
   let handle: Awaited<ReturnType<typeof open>> | undefined;
   try {
+    await assert_safe_journal_file(path);
     handle = await open(path, 'wx', 0o600);
     await handle.writeFile(JSON.stringify(claim));
     await handle.sync();
@@ -195,15 +242,18 @@ const acquire_claim = async (path: string, payload: string, runtime?: studio_pub
 /** Removes a claim only after proving the lock is still owned by this exact token. */
 const release_claim = async (path: string, token: string): Promise<void> => {
   const current = await read_claim(path).catch(() => undefined);
-  if (current?.token === token) await unlink(path);
+  if (current?.token === token) {
+    await assert_safe_journal_file(path);
+    await unlink(path);
+  }
 };
 
 /** Validates the request document and enforces one supplied local file per Markdown reference. */
 const validate = async (request: studio_request): Promise<ReturnType<typeof parse_studio_article>> => {
-  await render_markdown_preview(request.markdown);
-  const article = parse_studio_article(request.markdown, request.slug);
+  const article = normalize_studio_article(request.markdown, request.slug, { ...request.metadata, slug: request.slug });
+  await render_markdown_preview(article.body);
   const supplied = new Set((request.images ?? []).map((image) => image.source_path.replace(/^\.\//, '')));
-  const referenced = discover_local_images(request.markdown).map((item) => item.replace(/^\.\//, ''));
+  const referenced = discover_local_images(article.body).map((item) => item.replace(/^\.\//, ''));
   if (referenced.some((item) => !supplied.has(item)) || [...supplied].some((item) => !referenced.includes(item))) throw new studio_protocol_error([issue('image_pairing', 'Every local Markdown image must have exactly one supplied image.', 'images')]);
   return article;
 };
@@ -267,8 +317,8 @@ export const reconcile_studio_git_transaction = async (journal_root: string, req
   if (!request_id_pattern.test(request_id)) return recovery('invalid_request_id', 'The transaction request id is invalid.');
   let held_claim: studio_claim | undefined; let path = '';
   try {
-    const root = resolve(journal_root); path = resolve(journal_path(root, request_id));
-    if (!inside(root, path)) return recovery('unsafe_journal', 'Journal path is unsafe.');
+    path = await safe_journal_path(journal_root, request_id, false) ?? '';
+    if (!path) return recovery('missing_journal', 'No transaction journal exists.');
     const existing = await read_journal(path, request_id);
     if (!existing) return recovery('missing_journal', 'No transaction journal exists.');
     if (existing.status === 'completed') return existing.result!;
@@ -297,14 +347,14 @@ export const reconcile_studio_git_transaction = async (journal_root: string, req
       const public_site_url = dependencies.public_site_url === undefined ? undefined : canonical_public_site_url(dependencies.public_site_url);
       const slug = target_path_pattern.exec(current.target_path)?.[1];
       if (!commit_sha_pattern.test(inspected.commit_sha) || !public_site_url || !slug) return recovery('git_ambiguous', 'Git inspection could not produce a publishable commit and site URL.');
-      const public_url = article_public_url(public_site_url, slug);
+      const public_url = article_public_url(public_site_url, slug, current.language ?? 'zh');
       const result: studio_response = { protocol_version: 1, kind: 'published', public_url, commit_sha: inspected.commit_sha };
       await write_journal(path, { ...current, phase: 'pushed', status: 'completed', commit_sha: inspected.commit_sha, result }, dependencies.runtime);
       return result;
     }
     try { await mark_git_ambiguous(path, current, dependencies.runtime); } catch { /* durable git_pending still prohibits cleanup */ }
     return recovery('git_ambiguous', 'Git inspection could not determine commit state; images were retained.');
-  } catch (cause: unknown) { return recovery(cause instanceof Error && cause.message === 'corrupt journal' ? 'corrupt_journal' : 'git_reconciliation_failed', 'Git transaction reconciliation could not be completed safely.');
+  } catch (cause: unknown) { return recovery(cause instanceof unsafe_journal_error ? 'unsafe_journal' : cause instanceof Error && cause.message === 'corrupt journal' ? 'corrupt_journal' : 'git_reconciliation_failed', 'Git transaction reconciliation could not be completed safely.');
   } finally { if (held_claim && path) await release_claim(claim_path(path), held_claim.token).catch(() => undefined); }
 };
 
@@ -312,19 +362,22 @@ export const reconcile_studio_git_transaction = async (journal_root: string, req
 export const recover_stale_studio_claim = async (journal_root: string, request_id: string, options?: studio_claim_recovery_options): Promise<studio_response> => {
   if (!request_id_pattern.test(request_id)) return recovery('invalid_request_id', 'The claim request id is invalid.');
   try {
-    const root = resolve(journal_root); const path = resolve(claim_path(journal_path(root, request_id)));
-    if (!inside(root, path)) return recovery('unsafe_claim', 'Claim path is unsafe.');
+    const journal = await safe_journal_path(journal_root, request_id, false);
+    if (!journal) return recovery('missing_claim', 'No claim exists to recover.');
+    const path = claim_path(journal);
     const claim = await read_claim(path);
     if (!claim) return recovery('missing_claim', 'No claim exists to recover.');
     if (probe_process(claim.pid, options) !== 'dead') return recovery('claim_active', 'The claim PID is active, inaccessible, or may have been reused.');
     const quarantine = `${path}.${claim.token}.quarantine`;
     if (await lstat(quarantine).then(() => true).catch(() => false)) return recovery('claim_quarantine_exists', 'A prior claim quarantine needs manual inspection.');
+    await assert_safe_journal_file(path);
     await rename(path, quarantine);
     const verified = await read_claim(quarantine);
     if (!verified || verified.token !== claim.token || verified.pid !== claim.pid || verified.created_at !== claim.created_at || verified.payload_hash !== claim.payload_hash) return recovery('claim_quarantine_mismatch', 'Claim quarantine could not be verified.');
+    await assert_safe_journal_file(quarantine);
     await unlink(quarantine);
     return { protocol_version: 1, kind: 'recovered_stale_claim', errors: [] };
-  } catch { return recovery('claim_recovery_failed', 'The stale claim could not be safely released.'); }
+  } catch (cause: unknown) { return recovery(cause instanceof unsafe_journal_error ? 'unsafe_claim' : 'claim_recovery_failed', 'The stale claim could not be safely released.'); }
 };
 
 /** Reconciles a failed pre-commit transaction under the same durable claim protocol as publishing. */
@@ -333,8 +386,8 @@ export const cleanup_studio_transaction = async (journal_root: string, request_i
   let held_claim: studio_claim | undefined;
   let path = '';
   try {
-    const root = resolve(journal_root); path = resolve(journal_path(root, request_id));
-    if (!inside(root, path)) return recovery('unsafe_journal', 'Journal path is unsafe.');
+    path = await safe_journal_path(journal_root, request_id, false) ?? '';
+    if (!path) return recovery('missing_journal', 'No transaction journal exists.');
     const existing = await read_journal(path, request_id);
     if (!existing) return recovery('missing_journal', 'No transaction journal exists.');
     if (existing.status === 'completed') return existing.result!;
@@ -345,7 +398,7 @@ export const cleanup_studio_transaction = async (journal_root: string, request_i
     const current = await read_journal(path, request_id);
     if (!current || current.payload_hash !== existing.payload_hash || current.phase !== 'pre_commit' || (current.status !== 'in_progress' && current.status !== 'recovery_required') || current.pending_upload !== undefined) return recovery('journal_changed', 'Transaction state changed while claiming it.');
     return finish_precommit_failure(path, current, adapter, 'reconciled', 'Owned versions were reconciled.', runtime);
-  } catch { return recovery('corrupt_journal', 'Journal or claim is corrupt or unavailable; no objects were deleted.');
+  } catch (cause: unknown) { return recovery(cause instanceof unsafe_journal_error ? 'unsafe_journal' : 'corrupt_journal', 'Journal or claim is corrupt or unavailable; no objects were deleted.');
   } finally { if (held_claim && path) await release_claim(claim_path(path), held_claim.token).catch(() => undefined); }
 };
 
@@ -361,17 +414,13 @@ export const publish_article = async (input: unknown, dependencies: studio_publi
   if (!dependencies.image_options || !dependencies.git || !public_site_url || !dependencies.cos) return failed([issue('not_publishable', 'Publishing is not configured locally.')]);
   const snapshot = snapshot_request(request);
   if (snapshot.kind === 'preview') return recovery('invalid_request', 'Preview requests cannot enter publication flow.');
-  const public_url = article_public_url(public_site_url, snapshot.slug);
   const hash = payload_hash(snapshot); const root = resolve(dependencies.journal_root); const queue_key = `${root}:${snapshot.request_id}`;
   const previous = queues.get(queue_key) ?? Promise.resolve(); let release_queue: (() => void) | undefined;
   const gate = new Promise<void>((resolve_gate) => { release_queue = resolve_gate; }); const tail = previous.then(() => gate); queues.set(queue_key, tail); await previous;
   let held_claim: studio_claim | undefined; let path = '';
   try {
-    path = resolve(journal_path(root, snapshot.request_id));
-    if (!inside(root, path)) return recovery('unsafe_journal', 'Journal path is unsafe.');
-    await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-    const directory = await lstat(dirname(path)); const journal_file = await lstat(path).catch(() => undefined);
-    if (!directory.isDirectory() || directory.isSymbolicLink() || journal_file?.isSymbolicLink()) return recovery('unsafe_journal', 'Journal path is unsafe.');
+    path = await safe_journal_path(root, snapshot.request_id, true) ?? '';
+    if (!path) return recovery('unsafe_journal', 'Journal path is unsafe.');
     const acquired = await acquire_claim(claim_path(path), hash, dependencies.runtime);
     if (!acquired.acquired) {
       if (acquired.claim?.payload_hash !== undefined && acquired.claim.payload_hash !== hash) return failed([issue('request_id_conflict', 'request_id is claimed for another payload.', 'request_id')]);
@@ -387,6 +436,8 @@ export const publish_article = async (input: unknown, dependencies: studio_publi
     }
     let article: ReturnType<typeof parse_studio_article>;
     try { article = await validate(snapshot); } catch (cause: unknown) { return failed(cause instanceof studio_protocol_error ? cause.errors : cause instanceof studio_validation_error ? cause.issues : [issue('validation', 'Article validation failed.')]); }
+    if (snapshot.year !== Number(article.metadata.date.slice(0, 4))) return failed([issue('year_date_mismatch', 'year must match the article publication date.', 'year')]);
+    const public_url = article_public_url(public_site_url, snapshot.slug, article.metadata.language);
     let prepared: prepared_image[];
     try {
       const image_options: image_preparation_options = { ...dependencies.image_options, year: snapshot.year, slug: snapshot.slug };
@@ -401,7 +452,7 @@ export const publish_article = async (input: unknown, dependencies: studio_publi
     })) return failed([issue('image_replacement_unauthorized', 'A prepared image does not match the imported asset manifest.', 'images')]);
     if (current?.owned.some((object) => prepared_by_key.get(object.object_key)?.sha256 !== object.sha256)) return recovery('corrupt_journal', 'Journal-owned objects do not match this publication request.');
     if (!current) {
-      current = { protocol_version: 1, request_id: snapshot.request_id, payload_hash: hash, status: 'in_progress', phase: 'pre_commit', target_path: `src/content/writing/${snapshot.slug}.md`, owned: [] };
+      current = { protocol_version: 1, request_id: snapshot.request_id, payload_hash: hash, status: 'in_progress', phase: 'pre_commit', target_path: `src/content/writing/${snapshot.slug}.md`, language: article.metadata.language, owned: [] };
       try { await write_journal(path, current, dependencies.runtime); } catch { return recovery('journal_failure', 'Transaction journal could not be initialized before upload.'); }
     }
     let reused = new Set<string>();
@@ -415,8 +466,31 @@ export const publish_article = async (input: unknown, dependencies: studio_publi
         if (owned_keys.has(image.object_key) || reused.has(image.object_key)) continue;
         const remote = await dependencies.cos.inspect_object(image.object_key);
         if (remote) {
-          if (remote.sha256 !== image.sha256) throw new studio_image_publish_error('collision', [], `Object collision: ${image.object_key}`);
-          reused.add(image.object_key); continue;
+          if (remote.sha256 === image.sha256) { reused.add(image.object_key); continue; }
+          const imported_asset = existing_assets_by_source_path.get(image.source_path);
+          if (snapshot.kind !== 'publish_update' || !imported_asset || imported_asset.object_key !== image.object_key || !remote.etag || !dependencies.cos.replace_object) throw new studio_image_publish_error('collision', [], `Object collision: ${image.object_key}`);
+          const pending: journal = { ...current, pending_upload: { object_key: image.object_key, sha256: image.sha256 } };
+          await write_journal(path, pending, dependencies.runtime); current = pending;
+          let created: { version_id: string };
+          try { created = await dependencies.cos.replace_object(image, remote.etag, snapshot.request_id); }
+          catch (cause: unknown) {
+            const raced = await dependencies.cos.inspect_object(image.object_key).catch(() => undefined);
+            if (!raced || raced.sha256 !== image.sha256) throw new studio_image_publish_error('collision', [], `Object collision: ${image.object_key}`);
+            if (raced.studio_request_id === snapshot.request_id) {
+              if (!raced.version_id) throw new Error('matching remote replacement lacks exact version id');
+              created = { version_id: raced.version_id };
+            } else {
+              reused.add(image.object_key);
+              const cleared: journal = { ...current, pending_upload: undefined };
+              await write_journal(path, cleared, dependencies.runtime); current = cleared;
+              continue;
+            }
+          }
+          if (!created.version_id) throw new Error('replacement object lacks exact version id');
+          const owned = [...current.owned, { object_key: image.object_key, version_id: created.version_id, sha256: image.sha256 }];
+          const recorded: journal = { ...current, owned, pending_upload: undefined };
+          await write_journal(path, recorded, dependencies.runtime); current = recorded; owned_keys.add(image.object_key);
+          continue;
         }
         const pending: journal = { ...current, pending_upload: { object_key: image.object_key, sha256: image.sha256 } };
         await write_journal(path, pending, dependencies.runtime); current = pending;
@@ -476,7 +550,7 @@ export const publish_article = async (input: unknown, dependencies: studio_publi
     try { await write_journal(path, { ...committed, phase: 'pushed', status: 'completed', result }, dependencies.runtime); }
     catch { return { protocol_version: 1, kind: 'committed_local', commit_sha: git_result.commit_sha, recovery: 'Git succeeded but the pushed result was not journaled; retain resources and inspect the journal.' }; }
     return result;
-  } catch (cause: unknown) { return recovery(cause instanceof Error && cause.message === 'corrupt journal' ? 'corrupt_journal' : 'journal_failure', 'Publication journal is unavailable; no automatic cleanup was attempted.');
+  } catch (cause: unknown) { return recovery(cause instanceof unsafe_journal_error ? 'unsafe_journal' : cause instanceof Error && cause.message === 'corrupt journal' ? 'corrupt_journal' : 'journal_failure', 'Publication journal is unavailable; no automatic cleanup was attempted.');
   } finally {
     if (held_claim && path) await release_claim(claim_path(path), held_claim.token).catch(() => undefined);
     release_queue?.(); if (queues.get(queue_key) === tail) queues.delete(queue_key);
