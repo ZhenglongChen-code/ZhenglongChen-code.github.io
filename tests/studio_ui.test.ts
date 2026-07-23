@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, test } from 'vitest';
+import { is_latest_preview, next_tab_index } from '../studio/src/studio_logic';
 
 const read_source = (path: string): string => readFileSync(resolve(process.cwd(), path), 'utf8');
 
@@ -22,6 +23,27 @@ describe('local markdown studio UI contract', () => {
     expect(html).toContain('Update existing article');
   });
 
+  test('uses the exact Paper Index design tokens and keeps code monospace scoped', () => {
+    const global_css = read_source('src/styles/global.css');
+    const studio_css = read_source('studio/src/studio.css');
+
+    for (const token of ['--paper: #f3efe6', '--ink: #181815', '--muted: #6c6962', '--rule: rgba(24, 24, 21, .18)', '--cobalt: #1649c2', '--vermilion: #b53325', '--serif: Iowan Old Style, Palatino Linotype, Book Antiqua, Georgia, serif', '--sans: Avenir Next, Avenir, Helvetica Neue, sans-serif', '--mono: SFMono-Regular, Consolas, Liberation Mono, monospace']) {
+      expect(global_css).toContain(token);
+      expect(studio_css).toContain(token);
+    }
+    expect(studio_css).toMatch(/body[^}]+font-family: var\(--sans\)/);
+    expect(studio_css).toMatch(/#markdown-source[^}]+font-family: var\(--mono\)/);
+  });
+
+  test('uses roving tab logic and ignores stale preview responses', () => {
+    expect(next_tab_index(0, 'ArrowRight', 2)).toBe(1);
+    expect(next_tab_index(0, 'ArrowLeft', 2)).toBe(1);
+    expect(next_tab_index(1, 'ArrowRight', 2)).toBe(0);
+    expect(next_tab_index(0, 'Enter', 2)).toBe(0);
+    expect(is_latest_preview(2, 1)).toBe(false);
+    expect(is_latest_preview(2, 2)).toBe(true);
+  });
+
   test('keeps Studio local-only and excludes generated artifacts', () => {
     const main = read_source('studio/src/main.ts');
     const vite = read_source('studio/vite.config.ts');
@@ -31,6 +53,11 @@ describe('local markdown studio UI contract', () => {
     expect(main).toContain("latent_field_studio_draft_v1");
     expect(main).toContain("'/api/preview'");
     expect(main).toContain('server-sanitized');
+    expect(main).toContain('new Map<string, File>()');
+    expect(main).toContain("image_input.accept = 'image/*'");
+    expect(main).toContain('AbortController');
+    expect(main).toContain('preview_sequence');
+    expect(main).toContain('image_files');
     expect(vite).toContain("root: 'studio'");
     expect(vite).toContain("outDir: 'dist'");
     expect(vite).toContain('emptyOutDir: true');

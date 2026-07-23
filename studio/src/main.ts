@@ -1,4 +1,5 @@
 import './studio.css';
+import { is_latest_preview, next_tab_index } from './studio_logic';
 
 type article_metadata = {
   title: string;
@@ -48,7 +49,11 @@ const publish_update = by_id<HTMLButtonElement>('publish-update');
 
 let preview_timeout: number | undefined;
 let image_urls: Record<string, string> = {};
+const image_files = new Map<string, File>();
+let unresolved_sources: string[] = [];
 let publish_is_configured = false;
+let preview_controller: AbortController | undefined;
+let preview_sequence = 0;
 
 const get_field = <T extends HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>(name: string): T => {
   const field = metadata_form.elements.namedItem(name);
@@ -114,19 +119,33 @@ const restore_draft = (): void => {
   } catch { localStorage.removeItem(draft_key); announce('A corrupt local draft was safely ignored.'); }
 };
 
+const pair_image_file = (source_path: string, file: File | undefined): void => {
+  if (!file) return;
+  if (!file.type.startsWith('image/')) { announce(`Select an image file for ${source_path}.`, true); return; }
+  image_files.set(source_path, file);
+  render_images(unresolved_sources);
+  persist_draft();
+  announce(`${file.name} selected for ${source_path}.`);
+};
+
 const render_images = (images: string[]): void => {
+  unresolved_sources = images;
   unresolved_images.replaceChildren();
   if (images.length === 0) { unresolved_images.textContent = 'No local image references detected.'; return; }
   for (const filename of images) {
     const row = document.createElement('div');
     row.className = 'image-item';
     const label = document.createElement('strong'); label.textContent = filename;
-    const url = document.createElement('input'); url.type = 'url'; url.value = image_urls[filename] ?? ''; url.placeholder = 'Final https:// image URL'; url.setAttribute('aria-label', `Final URL for ${filename}`);
-    const selected = document.createElement('span'); selected.textContent = url.value ? `Selected: ${url.value}` : 'Awaiting final URL';
-    const pair = document.createElement('button'); pair.type = 'button'; pair.textContent = 'Pair image'; pair.setAttribute('aria-label', `Pair ${filename} with final URL`);
-    const save_url = (): void => { image_urls = { ...image_urls, [filename]: url.value.trim() }; selected.textContent = url.value ? `Selected: ${url.value}` : 'Awaiting final URL'; persist_draft(); };
-    url.addEventListener('input', save_url); pair.addEventListener('click', () => { save_url(); announce(url.value ? `${filename} paired with its final URL.` : `Enter a final URL for ${filename}.`, !url.value); });
-    row.append(label, url, selected, pair); unresolved_images.append(row);
+    const image_input = document.createElement('input'); image_input.type = 'file'; image_input.accept = 'image/*'; image_input.setAttribute('aria-label', `Select local image for ${filename}`);
+    const select_image = document.createElement('button'); select_image.type = 'button'; select_image.textContent = 'Select image'; select_image.setAttribute('aria-label', `Select local image for ${filename}`);
+    const selected = document.createElement('span'); selected.textContent = image_files.get(filename) ? `Selected file: ${image_files.get(filename)?.name}` : 'No local image selected.';
+    const url = document.createElement('input'); url.type = 'url'; url.value = image_urls[filename] ?? ''; url.placeholder = 'Final https:// image URL'; url.setAttribute('aria-label', `Final URL placeholder for ${filename}`);
+    const final_url = document.createElement('span'); final_url.textContent = url.value ? `Final URL: ${url.value}` : 'Final URL placeholder — supplied after upload.';
+    const save_url = (): void => { image_urls = { ...image_urls, [filename]: url.value.trim() }; final_url.textContent = url.value ? `Final URL: ${url.value}` : 'Final URL placeholder — supplied after upload.'; persist_draft(); };
+    image_input.addEventListener('change', () => pair_image_file(filename, image_input.files?.[0]));
+    select_image.addEventListener('click', () => image_input.click());
+    url.addEventListener('input', save_url);
+    row.append(label, image_input, select_image, selected, url, final_url); unresolved_images.append(row);
   }
 };
 
@@ -138,12 +157,16 @@ const update_publish_state = (configured: boolean): void => {
 };
 
 const request_preview = async (): Promise<void> => {
+  preview_controller?.abort();
+  preview_controller = new AbortController();
+  const request_sequence = ++preview_sequence;
   const request: preview_request = { markdown: source_input.value, metadata: read_metadata() };
   preview_marker.textContent = 'Rendering…';
   try {
-    const response = await fetch('/api/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request) });
+    const response = await fetch('/api/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request), signal: preview_controller.signal });
     if (!response.ok) throw new Error('Preview request failed.');
     const preview = await response.json() as preview_response;
+    if (!is_latest_preview(preview_sequence, request_sequence)) return;
     // server-sanitized preview HTML is assigned only to this dedicated preview container.
     preview_container.innerHTML = preview.preview_html;
     write_metadata(preview.metadata);
@@ -151,7 +174,8 @@ const request_preview = async (): Promise<void> => {
     update_publish_state(preview.publish_configured === true);
     preview_marker.textContent = 'Current proof';
     announce('Preview refreshed.');
-  } catch {
+  } catch (error) {
+    if ((error instanceof DOMException && error.name === 'AbortError') || !is_latest_preview(preview_sequence, request_sequence)) return;
     preview_marker.textContent = 'Preview unavailable';
     announce('Preview unavailable. Your local draft remains intact.', true);
   }
@@ -173,12 +197,12 @@ const import_file = async (file: File | undefined): Promise<void> => {
   schedule_preview();
 };
 
-const select_tab = (selected: 'editor' | 'preview'): void => {
-  const editor_selected = selected === 'editor';
+const select_tab = (selected_index: number, should_focus = false): void => {
+  const editor_selected = selected_index === 0;
   editor_tab.setAttribute('aria-selected', String(editor_selected)); editor_tab.tabIndex = editor_selected ? 0 : -1;
   preview_tab.setAttribute('aria-selected', String(!editor_selected)); preview_tab.tabIndex = editor_selected ? -1 : 0;
   editor_panel.hidden = !editor_selected; preview_panel.hidden = editor_selected;
-  (editor_selected ? source_input : preview_container).focus();
+  if (should_focus) (editor_selected ? editor_tab : preview_tab).focus();
 };
 
 const sync_workspace_mode = (): void => {
@@ -187,7 +211,7 @@ const sync_workspace_mode = (): void => {
     preview_panel.hidden = false;
     return;
   }
-  select_tab(editor_tab.getAttribute('aria-selected') === 'false' ? 'preview' : 'editor');
+  select_tab(editor_tab.getAttribute('aria-selected') === 'false' ? 1 : 0);
 };
 
 const publish = (mode: 'new' | 'update'): void => { announce(publish_is_configured ? `${mode === 'new' ? 'New article publication' : 'Article update'} is ready for the configured publisher.` : 'Publishing is disabled until a local publisher is configured.', true); };
@@ -198,9 +222,11 @@ metadata_form.addEventListener('input', schedule_preview);
 workspace.addEventListener('dragover', (event) => { event.preventDefault(); workspace.classList.add('is-dropping'); });
 workspace.addEventListener('dragleave', () => workspace.classList.remove('is-dropping'));
 workspace.addEventListener('drop', (event) => { event.preventDefault(); workspace.classList.remove('is-dropping'); void import_file(event.dataTransfer?.files[0]); });
-editor_tab.addEventListener('click', () => select_tab('editor'));
-preview_tab.addEventListener('click', () => select_tab('preview'));
-[editor_tab, preview_tab].forEach((tab) => tab.addEventListener('keydown', (event) => { if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); (event.currentTarget === editor_tab ? preview_tab : editor_tab).click(); } }));
+unresolved_images.addEventListener('dragover', (event) => { event.preventDefault(); event.stopPropagation(); });
+unresolved_images.addEventListener('drop', (event) => { event.preventDefault(); event.stopPropagation(); const image_file = [...(event.dataTransfer?.files ?? [])].find((file) => file.type.startsWith('image/')); if (!image_file) { announce('Drop an image file to pair it with a local image reference.', true); return; } if (unresolved_sources.length !== 1) { announce('Choose the unresolved image target before dropping a file.', true); return; } pair_image_file(unresolved_sources[0] as string, image_file); });
+editor_tab.addEventListener('click', () => select_tab(0));
+preview_tab.addEventListener('click', () => select_tab(1));
+[editor_tab, preview_tab].forEach((tab, current_index) => tab.addEventListener('keydown', (event) => { const selected_index = next_tab_index(current_index, event.key, 2); if (selected_index !== current_index) { event.preventDefault(); select_tab(selected_index, true); } }));
 publish_new.addEventListener('click', () => publish('new'));
 publish_update.addEventListener('click', () => publish('update'));
 window.addEventListener('resize', sync_workspace_mode);
