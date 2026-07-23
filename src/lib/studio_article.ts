@@ -1,7 +1,7 @@
 import matter from 'gray-matter';
 import remark_parse from 'remark-parse';
 import { unified as unified_processor } from 'unified';
-import { studio_validation_error, type studio_validation_issue } from './markdown_preview';
+import { collect_markdown_definitions, studio_validation_error, type studio_validation_issue } from './markdown_preview';
 
 export type studio_asset = {
   object_key: string;
@@ -184,18 +184,15 @@ type image_reference = {
   url?: string;
 };
 
-const collect_image_references = (node: unknown, definitions: Map<string, string>, images: image_reference[]): void => {
+const collect_image_references = (node: unknown, images: image_reference[]): void => {
   if (typeof node !== 'object' || node === null) return;
   const markdown_node = node as markdown_node;
-  if (markdown_node.type === 'definition' && typeof markdown_node.identifier === 'string' && typeof markdown_node.url === 'string') {
-    definitions.set(markdown_node.identifier, markdown_node.url);
-  }
   if (markdown_node.type === 'image' && typeof markdown_node.url === 'string') images.push({ url: markdown_node.url });
   if (markdown_node.type === 'imageReference' && typeof markdown_node.identifier === 'string') {
     images.push({ identifier: markdown_node.identifier });
   }
   if (Array.isArray(markdown_node.children)) {
-    for (const child of markdown_node.children) collect_image_references(child, definitions, images);
+    for (const child of markdown_node.children) collect_image_references(child, images);
   }
 };
 
@@ -203,9 +200,10 @@ const is_local_image = (source: string): boolean => !/^(?:[a-z][a-z0-9+.-]*:|\/|
 
 /** Finds unique local image references through Markdown AST image nodes and definitions. */
 export const discover_local_images = (markdown: string): string[] => {
-  const definitions = new Map<string, string>();
+  const markdown_tree = unified_processor().use(remark_parse).parse(markdown);
+  const definitions = collect_markdown_definitions(markdown_tree);
   const images: image_reference[] = [];
-  collect_image_references(unified_processor().use(remark_parse).parse(markdown), definitions, images);
+  collect_image_references(markdown_tree, images);
   const discovered_images: string[] = [];
   const seen_images = new Set<string>();
   for (const image of images) {

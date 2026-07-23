@@ -30,6 +30,7 @@ const preview_renderer = create_markdown_processor(markdown_processor_options);
 
 type markdown_node = {
   children?: unknown;
+  identifier?: unknown;
   type?: unknown;
   url?: unknown;
   value?: unknown;
@@ -37,7 +38,25 @@ type markdown_node = {
 
 type markdown_url = {
   kind: 'image' | 'link';
-  value: string;
+  identifier?: string;
+  value?: string;
+};
+
+/** Collects CommonMark definitions using the parser's normalized identifiers and first-definition precedence. */
+export const collect_markdown_definitions = (node: unknown): Map<string, string> => {
+  const definitions = new Map<string, string>();
+  const collect_definitions = (current_node: unknown): void => {
+    if (typeof current_node !== 'object' || current_node === null) return;
+    const markdown_node = current_node as markdown_node;
+    if (markdown_node.type === 'definition' && typeof markdown_node.identifier === 'string' && typeof markdown_node.url === 'string') {
+      if (!definitions.has(markdown_node.identifier)) definitions.set(markdown_node.identifier, markdown_node.url);
+    }
+    if (Array.isArray(markdown_node.children)) {
+      for (const child of markdown_node.children) collect_definitions(child);
+    }
+  };
+  collect_definitions(node);
+  return definitions;
 };
 
 const collect_untrusted_markdown = (node: unknown, raw_html: string[], markdown_urls: markdown_url[]): void => {
@@ -47,13 +66,21 @@ const collect_untrusted_markdown = (node: unknown, raw_html: string[], markdown_
   if ((markdown_node.type === 'image' || markdown_node.type === 'link') && typeof markdown_node.url === 'string') {
     markdown_urls.push({ kind: markdown_node.type, value: markdown_node.url });
   }
+  if ((markdown_node.type === 'imageReference' || markdown_node.type === 'linkReference') && typeof markdown_node.identifier === 'string') {
+    markdown_urls.push({
+      kind: markdown_node.type === 'imageReference' ? 'image' : 'link',
+      identifier: markdown_node.identifier,
+    });
+  }
   if (Array.isArray(markdown_node.children)) {
     for (const child of markdown_node.children) collect_untrusted_markdown(child, raw_html, markdown_urls);
   }
 };
 
-const find_unsafe_url = (url: markdown_url): string | undefined => {
-  const scheme = decode_html(url.value).replace(/[\u0000-\u0020]/g, '').match(/^([a-z][a-z0-9+.-]*):/i)?.[1]?.toLowerCase();
+const find_unsafe_url = (url: markdown_url, definitions: Map<string, string>): string | undefined => {
+  const value = url.value ?? (url.identifier === undefined ? undefined : definitions.get(url.identifier));
+  if (value === undefined) return undefined;
+  const scheme = decode_html(value).replace(/[\u0000-\u0020]/g, '').match(/^([a-z][a-z0-9+.-]*):/i)?.[1]?.toLowerCase();
   const allowed_schemes = url.kind === 'image' ? ['http', 'https'] : ['http', 'https', 'mailto'];
   return scheme && !allowed_schemes.includes(scheme) ? `${url.kind} URL` : undefined;
 };
@@ -61,9 +88,11 @@ const find_unsafe_url = (url: markdown_url): string | undefined => {
 const find_unsafe_html = (markdown: string): string | undefined => {
   const raw_html: string[] = [];
   const markdown_urls: markdown_url[] = [];
-  collect_untrusted_markdown(unified_processor().use(remark_parse).parse(markdown), raw_html, markdown_urls);
+  const markdown_tree = unified_processor().use(remark_parse).parse(markdown);
+  const definitions = collect_markdown_definitions(markdown_tree);
+  collect_untrusted_markdown(markdown_tree, raw_html, markdown_urls);
   for (const markdown_url of markdown_urls) {
-    const unsafe_url = find_unsafe_url(markdown_url);
+    const unsafe_url = find_unsafe_url(markdown_url, definitions);
     if (unsafe_url) return unsafe_url;
   }
   for (const raw_html_node of raw_html) {

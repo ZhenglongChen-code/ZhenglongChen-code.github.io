@@ -89,6 +89,18 @@ describe('render_markdown_preview', () => {
     });
   });
 
+  it('rejects unsafe reference-style link and image destinations', async () => {
+    await expect(render_markdown_preview('[unsafe][target]\n\n[target]: javascript:alert(1)')).rejects.toMatchObject({
+      name: 'studio_validation_error',
+      issues: [{ code: 'unsafe_html' }],
+    });
+    await expect(render_markdown_preview('![unsafe][image]\n\n[image]: data:image/svg+xml,evil')).rejects.toMatchObject({
+      name: 'studio_validation_error',
+      issues: [{ code: 'unsafe_html' }],
+    });
+    await expect(render_markdown_preview('[safe][]\n\n[safe]: /articles/safe')).resolves.toContain('href="/articles/safe"');
+  });
+
   it('rejects raw HTML declarations and orphan closing tags without rewriting them', async () => {
     await expect(render_markdown_preview('<!doctype html>')).rejects.toMatchObject({
       name: 'studio_validation_error',

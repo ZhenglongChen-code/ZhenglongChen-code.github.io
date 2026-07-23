@@ -124,4 +124,17 @@ Body`, 'leap-day').metadata.date).toBe('2024-02-29');
 
     expect(images).toEqual(['images/plot(1).png', 'images/a b.png', 'assets/figure.png']);
   });
+
+  it('uses the first normalized definition for full, collapsed, and shortcut image references', () => {
+    const images = discover_local_images(`![full][Figure Name]
+![collapsed][]
+![shortcut]
+
+[figure   name]: first.png
+[FIGURE NAME]: ignored.png
+[collapsed]: collapsed.png
+[shortcut]: shortcut.png`);
+
+    expect(images).toEqual(['first.png', 'collapsed.png', 'shortcut.png']);
+  });
 });
