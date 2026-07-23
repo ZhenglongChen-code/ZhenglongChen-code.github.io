@@ -19,7 +19,7 @@ describe('render_markdown_preview', () => {
   it('preserves formula-like HTML inside code fences', async () => {
     const html = await render_markdown_preview('```html\n<span onclick="alert(1)">$x$</span>\n```');
 
-    expect(html).toContain('&lt;span onclick="alert(1)"&gt;$x$&lt;/span&gt;');
+    expect(html).toContain('&#x3C;span onclick="alert(1)">$x$&#x3C;/span>');
     expect(html).not.toContain('<span onclick=');
   });
 
@@ -68,7 +68,23 @@ describe('render_markdown_preview', () => {
   it('keeps tilde and longer indented backtick fences inert', async () => {
     const html = await render_markdown_preview('   ~~~~html\n<img src=x onerror>\n   ~~~~\n\n   ````html\n<a href="javascript:alert(1)">x</a>\n   ````');
 
-    expect(html).toContain('&lt;img src=x onerror&gt;');
-    expect(html).toContain('&lt;a href="javascript:alert(1)"&gt;x&lt;/a&gt;');
+    expect(html).toContain('&#x3C;img src=x onerror>');
+    expect(html).toContain('&#x3C;a href="javascript:alert(1)">x&#x3C;/a>');
+  });
+
+  it('preserves cancel, boxed, and uncommon KaTeX MathML/SVG output', async () => {
+    const html = await render_markdown_preview('$\\cancel{x}+\\boxed{y}+\\color{red}{z}$');
+
+    expect(html).toContain('<menclose');
+    expect(html).toContain('<svg');
+    expect(html).toContain('<line');
+    expect(html).toContain('mathcolor');
+  });
+
+  it('rejects executable Markdown links before rendering', async () => {
+    await expect(render_markdown_preview('[unsafe](javascript:alert(1))')).rejects.toMatchObject({
+      name: 'studio_validation_error',
+      issues: [{ code: 'unsafe_html' }],
+    });
   });
 });
