@@ -161,7 +161,7 @@ describe('local Markdown Studio server', () => {
 
     const response = await request(base_url, '/api/config');
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ preview_only: true });
+    expect(await response.json()).toEqual({ preview_only: true, image_max_bytes: 20_000_000, request_max_bytes: 25_000_000, max_images: 20 });
   });
 
   it('rejects oversized base64 image input before protocol image decoding', async () => {

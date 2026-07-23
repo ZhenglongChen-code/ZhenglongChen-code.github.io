@@ -247,7 +247,8 @@ export const create_studio_server = (options: studio_server_options = {}): studi
   const preview = options.preview ?? default_preview_service;
   const studio_dist = options.studio_dist ?? resolve(process.cwd(), 'studio', 'dist');
   const session_token = randomBytes(32).toString('hex');
-  const server = createServer(async (request, response) => {
+  let server: Server;
+  const handle_request = async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     const address = server.address();
     const port = typeof address === 'object' && address !== null ? address.port : undefined;
     const host = port === undefined ? '' : `${loopback_host}:${port}`;
@@ -255,7 +256,13 @@ export const create_studio_server = (options: studio_server_options = {}): studi
     const same_host = exact_header(request, 'host', host);
     const same_origin = exact_header(request, 'origin', origin);
     const trusted_origin = same_origin || is_browser_same_origin_request(request, origin);
-    const pathname = new URL(request.url ?? '/', origin || 'http://invalid').pathname;
+    let pathname: string;
+    try {
+      pathname = new URL(request.url ?? '/', origin || 'http://invalid').pathname;
+    } catch {
+      send_json(response, 400, { error: 'Bad request.' });
+      return;
+    }
     if (!same_host) {
       send_json(response, 403, { error: 'Forbidden.' });
       return;
@@ -267,7 +274,7 @@ export const create_studio_server = (options: studio_server_options = {}): studi
     }
     if (pathname === '/api/config' && request.method === 'GET') {
       if (!trusted_origin) send_json(response, 403, { error: 'Forbidden.' });
-      else send_json(response, 200, { preview_only: publish === undefined });
+      else send_json(response, 200, { preview_only: publish === undefined, image_max_bytes, request_max_bytes, max_images: 20 });
       return;
     }
     if (pathname === '/api/preview' && request.method === 'POST') {
@@ -328,6 +335,12 @@ export const create_studio_server = (options: studio_server_options = {}): studi
     }
     response.writeHead(200, { 'content-type': asset.content_type, 'content-length': asset.bytes.byteLength, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
     response.end(request.method === 'HEAD' ? undefined : asset.bytes);
+  };
+  server = createServer((request, response) => {
+    void handle_request(request, response).catch(() => {
+      if (!response.headersSent) send_json(response, 500, { error: 'Internal server error.' });
+      else response.destroy();
+    });
   });
   return { server, session_token };
 };

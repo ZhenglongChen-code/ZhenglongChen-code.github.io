@@ -21,6 +21,7 @@ type preview_response = { preview_html: string; metadata: Partial<article_metada
 type image_intent = 'photo' | 'screenshot' | 'diagram';
 type publish_error = { code: string; field?: string; message: string };
 type publish_result = { kind: 'published'; public_url: string; commit_sha: string } | { kind: 'committed_local'; commit_sha: string; recovery: string } | { kind: 'failed'; errors: publish_error[] } | { kind: 'recovery_required'; errors: publish_error[] };
+type studio_limits = { image_max_bytes: number; request_max_bytes: number; max_images: number };
 type studio_draft = { markdown: string; metadata: article_metadata; image_urls: Record<string, string> };
 type storage_adapter = { getItem: (key: string) => string | null; setItem: (key: string, value: string) => void; removeItem: (key: string) => void };
 
@@ -125,6 +126,7 @@ let import_sequence = 0;
 let session_token: string | undefined;
 let expected_source_hash: string | undefined;
 let publish_in_flight = false;
+let studio_limits: studio_limits = { image_max_bytes: 20_000_000, request_max_bytes: 25_000_000, max_images: 20 };
 
 const get_storage = (): storage_adapter | undefined => { try { return window.localStorage; } catch { return undefined; } };
 
@@ -270,6 +272,9 @@ const image_base64 = async (file: File): Promise<string> => {
   return btoa(binary);
 };
 
+/** Estimates encoded image size without reading file bytes into browser memory. */
+const base64_size = (bytes: number): number => Math.ceil(bytes / 3) * 4;
+
 /** Returns a protocol-safe semantic image name from its paired Markdown source. */
 const semantic_image_name = (source_path: string): string => {
   const normalized = source_path.replace(/^.*\//, '').replace(/\.[^.]+$/, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
@@ -316,10 +321,11 @@ const import_file = async (file: File | undefined): Promise<void> => {
   if (!(/\.md$/i.test(file.name) || ['text/markdown', 'text/plain'].includes(file.type))) { import_feedback.textContent = 'Please choose a Markdown (.md) file.'; import_feedback.focus(); return; }
   let markdown: string;
   try { markdown = await file.text(); } catch { if (is_current_import(import_sequence, file_sequence)) { import_feedback.textContent = `Unable to read ${file.name}.`; import_feedback.focus(); } return; }
+  const imported_hash = await source_hash(markdown);
   if (!is_current_import(import_sequence, file_sequence)) return;
   reset_document_state();
   source_input.value = markdown;
-  expected_source_hash = await source_hash(markdown);
+  expected_source_hash = imported_hash;
   import_feedback.textContent = `Imported ${file.name}.`;
   import_feedback.focus();
   source_input.focus();
@@ -350,14 +356,25 @@ const publish = async (mode: 'new' | 'update'): Promise<void> => {
   const metadata = read_metadata();
   const year = Number(metadata.date.slice(0, 4));
   if (!Number.isInteger(year)) { announce('Enter a valid publication date before publishing.', 'validation'); return; }
-  if (unresolved_sources.some((source_path) => !image_files.has(source_path))) { announce('Pair every referenced local image before publishing.', 'validation'); return; }
+  const source_paths = [...unresolved_sources];
+  const image_snapshot = source_paths.map((source_path) => ({ source_path, file: image_files.get(source_path), intent: image_intents.get(source_path) }));
+  if (image_snapshot.some((image) => !image.file)) { announce('Pair every referenced local image before publishing.', 'validation'); return; }
+  if (image_snapshot.length > studio_limits.max_images || image_snapshot.some((image) => image.file!.size > studio_limits.image_max_bytes)) { announce('One or more images exceed the local publishing limit.', 'validation'); return; }
+  const metadata_snapshot = { ...metadata, tags: [...metadata.tags], social: { ...metadata.social } };
+  const snapshot = { markdown: source_input.value, metadata: metadata_snapshot, slug: metadata.slug, year, expected_source_hash, images: image_snapshot.map((image) => ({ source_path: image.source_path, file: image.file!, intent: image.intent ?? (image.file!.type === 'image/jpeg' ? 'photo' : 'diagram') })) };
+  const fixed_bytes = new TextEncoder().encode(JSON.stringify({ protocol_version: 1, kind: mode === 'new' ? 'publish_new' : 'publish_update', request_id: '0'.repeat(36), slug: snapshot.slug, year: snapshot.year, markdown: snapshot.markdown, metadata: snapshot.metadata, commit_message: `content: publish ${snapshot.slug}`, expected_source_hash: snapshot.expected_source_hash })).byteLength;
+  const estimated_bytes = fixed_bytes + snapshot.images.reduce((total, image) => total + base64_size(image.file.size) + new TextEncoder().encode(image.source_path).byteLength + 200, 0);
+  if (estimated_bytes > studio_limits.request_max_bytes) { announce('This publication request exceeds the local request limit.', 'validation'); return; }
   publish_in_flight = true;
   update_publish_state(publish_is_configured);
   try {
-    const images = await Promise.all(unresolved_sources.map(async (source_path) => { const file = image_files.get(source_path)!; return { source_path, bytes_base64: await image_base64(file), claimed_content_type: file.type === 'image/jpeg' ? 'image/jpeg' as const : 'image/png' as const, intent: image_intents.get(source_path) ?? (file.type === 'image/jpeg' ? 'photo' : 'diagram'), semantic_name: semantic_image_name(source_path) }; }));
-    const { slug, assets: _assets, ...protocol_metadata } = metadata;
-    const request = { protocol_version: 1 as const, kind: mode === 'new' ? 'publish_new' as const : 'publish_update' as const, request_id: crypto.randomUUID().toLowerCase(), slug, year, markdown: source_input.value, metadata: protocol_metadata, ...(images.length ? { images } : {}), commit_message: `content: publish ${slug}`, ...(mode === 'update' ? { expected_source_hash } : {}) };
-    const response = await fetch('/api/publish', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-studio-token': session_token }, body: JSON.stringify(request) });
+    const images: { source_path: string; bytes_base64: string; claimed_content_type: 'image/jpeg' | 'image/png'; intent: image_intent; semantic_name: string }[] = [];
+    for (const image of snapshot.images) images.push({ source_path: image.source_path, bytes_base64: await image_base64(image.file), claimed_content_type: image.file.type === 'image/jpeg' ? 'image/jpeg' : 'image/png', intent: image.intent, semantic_name: semantic_image_name(image.source_path) });
+    const { slug, assets: _assets, ...protocol_metadata } = snapshot.metadata;
+    const request = { protocol_version: 1 as const, kind: mode === 'new' ? 'publish_new' as const : 'publish_update' as const, request_id: crypto.randomUUID().toLowerCase(), slug: snapshot.slug, year: snapshot.year, markdown: snapshot.markdown, metadata: protocol_metadata, ...(images.length ? { images } : {}), commit_message: `content: publish ${snapshot.slug}`, ...(mode === 'update' ? { expected_source_hash: snapshot.expected_source_hash } : {}) };
+    const request_body = JSON.stringify(request);
+    if (new TextEncoder().encode(request_body).byteLength > studio_limits.request_max_bytes) { announce('This publication request exceeds the local request limit.', 'validation'); return; }
+    const response = await fetch('/api/publish', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-studio-token': session_token }, body: request_body });
     const result = await response.json() as publish_result;
     if (result.kind === 'failed' || result.kind === 'recovery_required') { announce(publication_feedback(result), 'publish'); return; }
     if (!response.ok) throw new Error('Publication failed.');
@@ -377,9 +394,10 @@ const initialize_local_api = async (): Promise<void> => {
     const [session_response, config_response] = await Promise.all([fetch('/api/session'), fetch('/api/config')]);
     if (!session_response.ok || !config_response.ok) throw new Error('Local session unavailable.');
     const session = await session_response.json() as { token?: unknown };
-    const config = await config_response.json() as { preview_only?: unknown };
+    const config = await config_response.json() as { preview_only?: unknown; image_max_bytes?: unknown; request_max_bytes?: unknown; max_images?: unknown };
     if (typeof session.token !== 'string' || !/^[a-f0-9]{64}$/.test(session.token)) throw new Error('Local session unavailable.');
     session_token = session.token;
+    if (typeof config.image_max_bytes === 'number' && typeof config.request_max_bytes === 'number' && typeof config.max_images === 'number' && Number.isSafeInteger(config.image_max_bytes) && Number.isSafeInteger(config.request_max_bytes) && Number.isSafeInteger(config.max_images) && config.image_max_bytes > 0 && config.request_max_bytes > 0 && config.max_images > 0) studio_limits = { image_max_bytes: config.image_max_bytes, request_max_bytes: config.request_max_bytes, max_images: config.max_images };
     update_publish_state(config.preview_only !== true);
   } catch {
     session_token = undefined;
