@@ -22,7 +22,7 @@ export type git_publish_input = {
   commit_message: string;
 };
 
-export type git_publish_failure_code = 'validation' | 'unsafe_path' | 'article_exists' | 'article_missing' | 'stale_source' | 'target_dirty' | 'repository_busy' | 'wrong_branch' | 'integrity_failed' | 'git_failed';
+export type git_publish_failure_code = 'validation' | 'unsafe_path' | 'article_exists' | 'article_missing' | 'stale_source' | 'target_dirty' | 'repository_busy' | 'wrong_branch' | 'integrity_failed' | 'critical_recovery_failed' | 'git_failed';
 export type git_publish_failure = { ok: false; code: git_publish_failure_code; message: string };
 export type git_push_failed = { ok: false; code: 'push_failed'; message: string; commit_sha: string; committed_paths: string[]; recovery: string };
 export type git_publish_success = { ok: true; path: string; commit_sha: string; push_status: 'pushed' };
@@ -105,12 +105,18 @@ export class local_git_adapter implements git_adapter {
         const current = await readFile(target);
         if (sha256(current) !== input.expected_source_hash) return { ok: false, code: 'stale_source', message: 'Target article changed since it was read.' };
       }
+      const old_head = await this.run_git('rev-parse', 'HEAD');
       await this.atomic_write(target, input.source);
       await this.run_git('add', '--', relative_path);
       await this.run_git('commit', '--only', '-m', input.commit_message, '--', relative_path);
       const commit_sha = await this.run_git('rev-parse', 'HEAD');
       const changed = (await this.run_git('diff-tree', '--no-commit-id', '--name-only', '-r', 'HEAD')).split('\n').filter(Boolean);
-      if (changed.length !== 1 || changed[0] !== relative_path || !this.bytes_equal(await this.committed_bytes(commit_sha, relative_path), input.source)) return { ok: false, code: 'integrity_failed', message: 'Committed article integrity verification failed.' };
+      if (changed.length !== 1 || changed[0] !== relative_path || !this.bytes_equal(await this.committed_bytes(commit_sha, relative_path), input.source)) {
+        try {
+          await this.run_git('update-ref', `refs/heads/${this.publication_branch}`, old_head, commit_sha);
+          return { ok: false, code: 'integrity_failed', message: 'Committed article integrity verification failed; the unpublished branch ref was restored.' };
+        } catch { return { ok: false, code: 'critical_recovery_failed', message: 'Committed article integrity failed and branch recovery requires manual intervention.' }; }
+      }
       try { await this.run_git('push', this.remote_name, this.publication_branch); return { ok: true, path: relative_path, commit_sha, push_status: 'pushed' }; }
       catch { return { ok: false, code: 'push_failed', message: 'Push failed after the local article commit was created.', commit_sha, committed_paths: [relative_path], recovery: 'Local commit was kept. Fetch the remote branch, resolve divergence, then push normally without force.' }; }
     } catch { return { ok: false, code: 'git_failed', message: 'Git publication failed; inspect the local repository state and retry.' }; }

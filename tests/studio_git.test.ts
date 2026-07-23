@@ -150,15 +150,19 @@ describe('local_git_adapter', () => {
     await writeFile(join(root, 'src/content/writing/conflict.md'), 'base\n'); await git(root, 'add', '--', 'src/content/writing/conflict.md'); await git(root, 'commit', '-m', 'conflict base');
     await git(root, 'checkout', '-b', 'conflict-side'); await writeFile(join(root, 'src/content/writing/conflict.md'), 'side\n'); await git(root, 'commit', '-am', 'side'); await git(root, 'checkout', 'main'); await writeFile(join(root, 'src/content/writing/conflict.md'), 'main\n'); await git(root, 'commit', '-am', 'main');
     await exec_file_async('git', ['merge', 'conflict-side'], { cwd: root }).catch(() => undefined);
+    const merge_marker = await git(root, 'rev-parse', '--git-path', 'MERGE_HEAD'); await rm(merge_marker.startsWith('/') ? merge_marker : join(root, merge_marker));
+    expect(await git(root, 'ls-files', '-u')).not.toBe('');
     const adapter = new local_git_adapter({ repository_root: root, publication_branch: 'main', remote_name: 'origin', writing_directory: 'src/content/writing' });
     await expect(adapter.publish({ operation: 'publish_new', slug: 'conflict', source: new Uint8Array([1]), commit_message: 'Publish conflict' })).resolves.toMatchObject({ ok: false, code: 'repository_busy' });
+    expect(await git(root, 'ls-files', '-u')).not.toBe('');
   });
 
   it('detects a hook-mutated committed blob and snapshots caller bytes before delayed commands', async () => {
     const { root } = await make_repository();
     const hook = join(root, '.git/hooks/pre-commit'); await writeFile(hook, '#!/bin/sh\nprintf changed > src/content/writing/hooked.md\ngit add -- src/content/writing/hooked.md\n'); await (await import('node:fs/promises')).chmod(hook, 0o755);
-    const adapter = new local_git_adapter({ repository_root: root, publication_branch: 'main', remote_name: 'origin', writing_directory: 'src/content/writing' });
+    const adapter = new local_git_adapter({ repository_root: root, publication_branch: 'main', remote_name: 'origin', writing_directory: 'src/content/writing' }); const before = await git(root, 'rev-parse', 'HEAD');
     await expect(adapter.publish({ operation: 'publish_new', slug: 'hooked', source: new TextEncoder().encode('original'), commit_message: 'Publish hooked' })).resolves.toMatchObject({ ok: false, code: 'integrity_failed' });
+    expect(await git(root, 'rev-parse', 'HEAD')).toBe(before); expect(await git(root, 'status', '--porcelain', '--', 'src/content/writing/hooked.md')).not.toBe('');
     await rm(hook);
     let delayed = false;
     const runner: git_command_runner = async (file, args, cwd) => { if (args[0] === 'rev-parse' && !delayed) { delayed = true; await new Promise<void>((resolve_delay) => setTimeout(resolve_delay, 25)); } const output = await exec_file_async(file, [...args], { cwd }); return { stdout: output.stdout, stderr: output.stderr }; };
